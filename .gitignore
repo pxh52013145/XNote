@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-electron/
+out/
+.DS_Store
+.vite/
+*.log
+*.tsbuildinfo
+
+# Electron / OS
+Thumbs.db
+Desktop.ini
