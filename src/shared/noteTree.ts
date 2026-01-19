@@ -10,20 +10,33 @@ function splitPosixPath(p: string): string[] {
   return p.split('/').filter(Boolean)
 }
 
-export function buildNoteTree(files: NoteFile[]): NoteTreeFolder {
+function normalizeFolderPath(p: string): string | null {
+  const parts = splitPosixPath(p.replace(/\\/g, '/'))
+  if (parts.length === 0) return null
+  if (parts.some((part) => part === '.' || part === '..')) return null
+  return parts.join('/')
+}
+
+export function buildNoteTree(files: NoteFile[], folderPaths: string[] = []): NoteTreeFolder {
   const root: NoteTreeFolder = { kind: 'folder', name: '', path: '', children: [] }
-  const folders = new Map<string, NoteTreeFolder>()
-  folders.set('', root)
+  const folderNodes = new Map<string, NoteTreeFolder>()
+  folderNodes.set('', root)
 
   const ensureFolder = (folderPath: string, folderName: string): NoteTreeFolder => {
-    const existing = folders.get(folderPath)
+    const existing = folderNodes.get(folderPath)
     if (existing) return existing
     const parentPath = folderPath.split('/').slice(0, -1).join('/')
     const parent = ensureFolder(parentPath, parentPath.split('/').pop() ?? '')
     const node: NoteTreeFolder = { kind: 'folder', name: folderName, path: folderPath, children: [] }
     parent.children.push(node)
-    folders.set(folderPath, node)
+    folderNodes.set(folderPath, node)
     return node
+  }
+
+  for (const folderPath of folderPaths) {
+    const normalized = normalizeFolderPath(folderPath)
+    if (!normalized) continue
+    ensureFolder(normalized, normalized.split('/').pop() ?? '')
   }
 
   for (const file of files) {
@@ -49,4 +62,3 @@ export function buildNoteTree(files: NoteFile[]): NoteTreeFolder {
   sortNode(root)
   return root
 }
-

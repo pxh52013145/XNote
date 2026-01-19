@@ -4,21 +4,31 @@ import type { NoteFile } from '@shared/types'
 import { stripMarkdownExtension } from '@shared/paths'
 import { buildNoteTree, type NoteTreeNode } from '@shared/noteTree'
 
+type DragItem = { kind: 'file' | 'folder'; path: string }
+
 export function FileExplorer(props: {
   files: NoteFile[]
+  folders?: string[]
   activePath: string | null
   onOpenFile: (path: string) => void
+  onContextMenuFile?: (path: string, x: number, y: number) => void
+  onMoveFile?: (fromPath: string, toFolder: string) => void
+  onMoveFolder?: (fromFolder: string, toFolder: string) => void
   vaultLoaded: boolean
   vaultLabel?: string
 }) {
-  const tree = useMemo(() => buildNoteTree(props.files), [props.files])
+  const tree = useMemo(() => buildNoteTree(props.files, props.folders ?? []), [props.files, props.folders])
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']))
+  const [dragging, setDragging] = useState<DragItem | null>(null)
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
 
   useEffect(() => {
     if (!props.vaultLoaded) {
       setExpanded(new Set(['']))
       setFilter('')
+      setDragging(null)
+      setDropTarget(null)
     }
   }, [props.vaultLoaded])
 
@@ -47,13 +57,59 @@ export function FileExplorer(props: {
       const isRoot = node.path === ''
       const isOpen = filterNorm ? true : expanded.has(node.path)
       const label = isRoot ? props.vaultLabel ?? 'Vault' : node.name
+      const canDrop = Boolean(props.onMoveFile || props.onMoveFolder)
+      const canDragFolder = Boolean(props.onMoveFolder) && !isRoot
+      const isDropTarget = dropTarget === node.path
 
       return (
         <div key={node.path || 'root'}>
           <button
-            className="tree-row folder"
+            className={isDropTarget ? 'tree-row folder drop-target' : 'tree-row folder'}
             style={{ paddingLeft: `${10 + depth * 14}px` }}
             onClick={() => (isRoot ? toggleFolder('') : toggleFolder(node.path))}
+            draggable={canDragFolder}
+            onDragStart={(e) => {
+              if (!canDragFolder) return
+              const item: DragItem = { kind: 'folder', path: node.path }
+              setDragging(item)
+              setDropTarget(null)
+              e.dataTransfer.effectAllowed = 'move'
+              e.dataTransfer.setData('application/x-xnote-item', JSON.stringify(item))
+              e.dataTransfer.setData('text/plain', node.path)
+            }}
+            onDragEnd={() => {
+              setDragging(null)
+              setDropTarget(null)
+            }}
+            onDragOver={(e) => {
+              if (!canDrop) return
+              if (!dragging) return
+              if (dragging.kind === 'file' && !props.onMoveFile) return
+              if (dragging.kind === 'folder' && !props.onMoveFolder) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              setDropTarget(node.path)
+            }}
+            onDragLeave={() => {
+              setDropTarget((prev) => (prev === node.path ? null : prev))
+            }}
+            onDrop={(e) => {
+              if (!canDrop) return
+              e.preventDefault()
+
+              const item = dragging
+              setDragging(null)
+              setDropTarget(null)
+              if (!item) return
+
+              if (item.kind === 'file') {
+                props.onMoveFile?.(item.path, node.path)
+                return
+              }
+              if (item.kind === 'folder') {
+                props.onMoveFolder?.(item.path, node.path)
+              }
+            }}
             title={node.path || label}
           >
             <span className="tree-icon">
@@ -77,6 +133,25 @@ export function FileExplorer(props: {
         className={isActive ? 'tree-row file active' : 'tree-row file'}
         style={{ paddingLeft: `${10 + depth * 14}px` }}
         onClick={() => props.onOpenFile(node.path)}
+        onContextMenu={(e) => {
+          if (!props.onContextMenuFile) return
+          e.preventDefault()
+          props.onContextMenuFile(node.path, e.clientX, e.clientY)
+        }}
+        draggable={Boolean(props.onMoveFile)}
+        onDragStart={(e) => {
+          if (!props.onMoveFile) return
+          const item: DragItem = { kind: 'file', path: node.path }
+          setDragging(item)
+          setDropTarget(null)
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('application/x-xnote-item', JSON.stringify(item))
+          e.dataTransfer.setData('text/plain', node.path)
+        }}
+        onDragEnd={() => {
+          setDragging(null)
+          setDropTarget(null)
+        }}
         title={node.path}
       >
         <span className="tree-icon spacer" />

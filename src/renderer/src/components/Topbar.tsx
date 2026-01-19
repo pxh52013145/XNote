@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BookOpen, Command, Copy, Minus, PanelLeft, PanelRight, Pencil, Square, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BookOpen, Command, Copy, Minus, PanelLeft, PanelRight, Pencil, Square, X } from 'lucide-react'
 import { xnote } from '../api'
 
 export type TopbarTab = {
@@ -17,6 +17,11 @@ export function Topbar(props: {
   activeTabId: string
   onSelectTab: (id: string) => void
   onCloseTab: (id: string) => void
+
+  canGoBack: boolean
+  canGoForward: boolean
+  onGoBack: () => void
+  onGoForward: () => void
 
   isLeftSidebarOpen: boolean
   onToggleLeftSidebar: () => void
@@ -82,6 +87,12 @@ export function Topbar(props: {
       </div>
 
       <div className="topbar-actions">
+        <button className="icon-btn" title="Back" onClick={props.onGoBack} disabled={!props.canGoBack}>
+          <ArrowLeft size={16} />
+        </button>
+        <button className="icon-btn" title="Forward" onClick={props.onGoForward} disabled={!props.canGoForward}>
+          <ArrowRight size={16} />
+        </button>
         <button
           className={props.isLeftSidebarOpen ? 'icon-btn' : 'icon-btn active'}
           title={props.isLeftSidebarOpen ? 'Hide left sidebar' : 'Show left sidebar'}
@@ -128,4 +139,3 @@ export function Topbar(props: {
     </header>
   )
 }
-

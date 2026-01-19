@@ -1,11 +1,26 @@
-import type { NoteFile, VaultChangeEvent } from './types'
+import type { NoteFile, VaultChangeEvent, VaultLayout, VaultSettings } from './types'
 import type { AgentToolDefinition, AgentToolResult } from './agent'
 import type { NoteSearchResult } from './search'
 
 export interface XNoteAPI {
   getVaultPath(): Promise<string | null>
+  listRecentVaults(): Promise<string[]>
+  getVaultLayout(vaultPath: string): Promise<VaultLayout | null>
+  saveVaultLayout(vaultPath: string, layout: VaultLayout): Promise<void>
+  getVaultSettings(vaultPath: string): Promise<VaultSettings | null>
+  saveVaultSettings(vaultPath: string, settings: VaultSettings): Promise<void>
+  getHotkeys(): Promise<Record<string, string>>
+  setHotkey(commandId: string, hotkey: string): Promise<void>
+  clearHotkey(commandId: string): Promise<void>
   selectVault(): Promise<string | null>
+  openVaultPath(vaultPath: string): Promise<string>
   listNotes(): Promise<NoteFile[]>
+  listFolders(): Promise<string[]>
+  createFolder(folderPath: string): Promise<string>
+  renameFolder(fromPath: string, toPath: string): Promise<string>
+  saveAttachment(args: { data: ArrayBuffer; fileName?: string; mime?: string; notePath?: string }): Promise<string>
+  readVaultFile(filePath: string): Promise<{ data: ArrayBuffer; mime: string | null }>
+  openVaultFile(filePath: string): Promise<void>
   readNote(notePath: string): Promise<string>
   createNote(notePath: string, initialContent?: string): Promise<string>
   writeNote(notePath: string, content: string): Promise<void>

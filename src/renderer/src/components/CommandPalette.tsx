@@ -7,6 +7,7 @@ export type PaletteItem = {
   description?: string
   shortcut?: string
   keywords?: string
+  group?: string
   icon?: JSX.Element
   onSelect: () => void
 }
@@ -50,14 +51,56 @@ export function CommandPalette(props: {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
 
-  const filtered = useMemo(() => {
+  const { groups, flatItems } = useMemo(() => {
     const q = normalize(query)
     const ranked = props.items
       .map((item, index) => ({ item, index, score: bestItemScore(item, q) }))
       .filter((r) => r.score != null)
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.index - b.index)
 
-    return ranked.map((r) => r.item)
+    const hasGroups = ranked.some((r) => Boolean(r.item.group?.trim()))
+    if (!hasGroups) {
+      const items = ranked.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.index - b.index).map((r) => r.item)
+      return { groups: [{ name: null as string | null, items }], flatItems: items }
+    }
+
+    type RankedItem = (typeof ranked)[number]
+    type GroupState = { name: string; firstIndex: number; bestScore: number; items: RankedItem[] }
+
+    const byGroup = new Map<string, GroupState>()
+    for (const r of ranked) {
+      const name = r.item.group?.trim() || 'Other'
+      const existing = byGroup.get(name)
+      if (!existing) {
+        byGroup.set(name, { name, firstIndex: r.index, bestScore: r.score ?? 0, items: [r] })
+        continue
+      }
+      existing.firstIndex = Math.min(existing.firstIndex, r.index)
+      existing.bestScore = Math.max(existing.bestScore, r.score ?? 0)
+      existing.items.push(r)
+    }
+
+    const queryActive = q.length > 0
+    const sortedGroups = [...byGroup.values()].sort((a, b) => {
+      if (queryActive) {
+        return b.bestScore - a.bestScore || a.firstIndex - b.firstIndex
+      }
+      return a.firstIndex - b.firstIndex
+    })
+
+    const groups = sortedGroups.map((g) => {
+      const items = g.items
+        .sort((a, b) => {
+          if (queryActive) {
+            return (b.score ?? 0) - (a.score ?? 0) || a.index - b.index
+          }
+          return a.index - b.index
+        })
+        .map((r) => r.item)
+      return { name: g.name, items }
+    })
+
+    const flatItems = groups.flatMap((g) => g.items)
+    return { groups, flatItems }
   }, [props.items, query])
 
   useEffect(() => {
@@ -78,7 +121,7 @@ export function CommandPalette(props: {
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setActiveIndex((i) => Math.min(i + 1, Math.max(0, filtered.length - 1)))
+        setActiveIndex((i) => Math.min(i + 1, Math.max(0, flatItems.length - 1)))
         return
       }
       if (e.key === 'ArrowUp') {
@@ -87,7 +130,7 @@ export function CommandPalette(props: {
         return
       }
       if (e.key === 'Enter') {
-        const item = filtered[activeIndex]
+        const item = flatItems[activeIndex]
         if (!item) return
         e.preventDefault()
         props.onClose()
@@ -96,11 +139,11 @@ export function CommandPalette(props: {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeIndex, filtered, props])
+  }, [activeIndex, flatItems, props])
 
   useEffect(() => {
-    setActiveIndex((i) => Math.min(i, Math.max(0, filtered.length - 1)))
-  }, [filtered.length])
+    setActiveIndex((i) => Math.min(i, Math.max(0, flatItems.length - 1)))
+  }, [flatItems.length])
 
   if (!props.open) return null
 
@@ -119,30 +162,45 @@ export function CommandPalette(props: {
         </div>
 
         <div className="palette-list" role="listbox">
-          {filtered.length === 0 ? <div className="palette-empty">No results</div> : null}
+          {flatItems.length === 0 ? <div className="palette-empty">No results</div> : null}
 
-          {filtered.map((item, idx) => (
-            <button
-              key={item.id}
-              className={idx === activeIndex ? 'palette-item active' : 'palette-item'}
-              onMouseEnter={() => setActiveIndex(idx)}
-              onClick={() => {
-                props.onClose()
-                item.onSelect()
-              }}
-              role="option"
-              aria-selected={idx === activeIndex}
-            >
-              <div className="palette-item-left">
-                {item.icon ? <div className="palette-icon">{item.icon}</div> : null}
-                <div className="palette-text">
-                  <div className="palette-item-title">{item.title}</div>
-                  {item.description ? <div className="palette-item-desc">{item.description}</div> : null}
+          {(() => {
+            let offset = 0
+            return groups.map((group) => {
+              const start = offset
+              offset += group.items.length
+              return (
+                <div key={group.name ?? 'all'} className="palette-group-block">
+                  {group.name ? <div className="palette-group">{group.name}</div> : null}
+                  {group.items.map((item, idx) => {
+                    const globalIndex = start + idx
+                    return (
+                      <button
+                        key={item.id}
+                        className={globalIndex === activeIndex ? 'palette-item active' : 'palette-item'}
+                        onMouseEnter={() => setActiveIndex(globalIndex)}
+                        onClick={() => {
+                          props.onClose()
+                          item.onSelect()
+                        }}
+                        role="option"
+                        aria-selected={globalIndex === activeIndex}
+                      >
+                        <div className="palette-item-left">
+                          {item.icon ? <div className="palette-icon">{item.icon}</div> : null}
+                          <div className="palette-text">
+                            <div className="palette-item-title">{item.title}</div>
+                            {item.description ? <div className="palette-item-desc">{item.description}</div> : null}
+                          </div>
+                        </div>
+                        {item.shortcut ? <div className="palette-shortcut">{item.shortcut}</div> : null}
+                      </button>
+                    )
+                  })}
                 </div>
-              </div>
-              {item.shortcut ? <div className="palette-shortcut">{item.shortcut}</div> : null}
-            </button>
-          ))}
+              )
+            })
+          })()}
         </div>
       </div>
     </div>

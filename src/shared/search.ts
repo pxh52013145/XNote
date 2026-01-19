@@ -58,4 +58,3 @@ export function noteTitle(path: string, frontmatterTitle?: unknown): string {
   if (typeof frontmatterTitle === 'string' && frontmatterTitle.trim()) return frontmatterTitle.trim()
   return noteTitleFromPath(path)
 }
-
