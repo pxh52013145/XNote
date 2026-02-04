@@ -7,6 +7,15 @@ out/
 *.log
 *.tsbuildinfo
 
+# Rust
+target/
+
+# 排除归档文件夹
+archive/
+
+# 排除参考资料文件夹
+reference/
+
 # Electron / OS
 Thumbs.db
 Desktop.ini

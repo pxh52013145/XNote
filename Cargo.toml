@@ -1,0 +1,8 @@
+[workspace]
+members = [
+  "crates/xnote-core",
+  "crates/xnote-ui",
+  "crates/xtask",
+]
+resolver = "2"
+

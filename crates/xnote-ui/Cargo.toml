@@ -1,0 +1,9 @@
+[package]
+name = "xnote-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.100"
+gpui = "0.2.2"
+xnote-core = { path = "../xnote-core" }
