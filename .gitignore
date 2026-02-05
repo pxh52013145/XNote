@@ -16,6 +16,9 @@ archive/
 # 排除参考资料文件夹
 reference/
 
+# 排除示例文件夹
+Knowledge.vault/
+
 # Electron / OS
 Thumbs.db
 Desktop.ini

@@ -628,3 +628,15 @@ Ready)**
 UUID 文件树预览器。** 不要管 UI 好不好看，先实现：在硬盘上创建 10 个文件夹，在软件里通过拖拽改变它们的顺序，并把这个顺序持久化到本地。
 
 **你需要我帮你写一个简单的 Rust 数据结构定义，用来处理这种“非文件名依赖”的排序逻辑吗？**
+
+---
+
+## 2026-02-05 Dev Log (Codex)
+
+- UI: Sidebar collapse now fully hides; collapse buttons live in panel headers; when collapsed, expand buttons appear at editor tabs leading edge (keeps titlebar/search position stable).
+- UI: Tab-bar expand buttons animate slide/fade; sidebar toggle icons use panel-left/right open/close glyphs (Obsidian-like).
+- Explorer: Aligned indent guides to `Xnote.pen` (vertical rails); leaf rows remove extra twisty slot for better alignment; removed unused `guide_mask/is_last` plumbing.
+- Validation: `cargo test -p xnote-core` OK; `cargo check -p xnote-ui` OK.
+
+Next
+- Run `cargo run -p xnote-ui` and compare against `Xnote.pen` for 1:1 spacing + cap visuals; iterate on top-cap “feel” and responsive behavior.

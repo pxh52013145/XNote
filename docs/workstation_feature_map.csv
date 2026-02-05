@@ -1,20 +1,20 @@
-ID,领域,模块,功能,对标Obsidian,建议层,里程碑,优先级,状态,备注
-ARCH-001,架构,总体,建立 Rust Core + GPUI UI 分层与命令边界,Zed-like,design,MVP,P0,partial,已建立 design/architecture + Cargo workspace（crates/xnote-core, crates/xnote-ui）
-DATA-001,数据,Knowledge,约定 *.vault + .xnote 目录结构与 POSIX 路径,Vault,core,MVP,P0,todo,路径规范化/越权防护
-VAULT-001,核心,Knowledge,Stage A fast scan：构建文件树（不读内容）,File explorer,core,MVP,P0,partial,已在 crates/xnote-core 实现 fast_scan_notes（ignore walker）；UI 已接入用于 Explorer 列表
-VAULT-002,核心,Knowledge,读取/写入笔记（read/write）与安全 join,Read/Write,core,MVP,P0,partial,已实现 read_note/write_note + 路径规范化；UI 已接入异步读取/保存
-ORDER-001,体验,Knowledge,Folder order（notes.order.md）解析/写入与拖拽持久化,Obsidian缺失,core+ui,MVP,P0,done,Core parse/format + load/save；UI 已实现同级拖拽 reorder + 插入线 + 去抖写回（notes）
-UI-001,界面,Knowledge,GPUI 主窗口骨架（Explorer/Editor/Inspector/Bottom）,Zed layout,ui,MVP,P0,partial,已在 crates/xnote-ui 搭出窗口骨架；支持 --vault / XNOTE_VAULT 打开 vault 并扫描
-UI-002,界面,Knowledge,Explorer 虚拟列表/树 + filter（10w 顺滑）,File explorer,ui,MVP,P0,partial,Explorer 使用 xnote-core fast scan + folder headers；仍缺 filter/真正树展开
-UI-003,交互,Knowledge,拖拽排序（同级 reorder + 插入线提示）,N/A,ui,MVP,P0,done,已实现拖拽排序（同级）+ 插入线提示 + 去抖写回 order.md
-EDIT-001,编辑器,Knowledge,最小文本编辑（打开/编辑/保存）,Markdown editor,ui,MVP,P0,partial,已实现点选笔记→异步 read→键盘最小编辑（追加/Backspace/Enter/Tab）→去抖自动保存 + Ctrl+S（未做光标/选择）
-CMD-001,命令,全局,Command palette（10–20 个核心命令）,Command palette,ui,MVP,P1,todo,
-OPEN-001,体验,Knowledge,Quick Open（path/title fuzzy）≤80ms,Pallette,core+ui,MVP,P1,todo,P50/P95 采样
+﻿ID,领域,模块,功能,对标Obsidian,建议层,里程碑,优先级,状态,备注
+ARCH-001,架构,总体,建立 Rust Core + GPUI UI 分层与命令边界,Zed-like,design,MVP,P0,partial,已建立 design/architecture + Cargo workspace（crates/xnote-core + crates/xnote-ui）
+DATA-001,数据,Knowledge,约定 *.vault + .xnote 目录结构与 POSIX 路径,Vault,core,MVP,P0,done,core: POSIX vault-rel path normalization + traversal guard (normalize_* + join_inside); added ./ prefix compatibility + tests
+VAULT-001,核心,Knowledge,Stage A fast scan：构建文件树（不读内容）,File explorer,core,MVP,P0,done,core: fast_scan_notes（ignore walker）；UI Explorer 已接入并用于 100k 列表
+VAULT-002,核心,Knowledge,读取/写入笔记（read/write）与安全 join,Read/Write,core,MVP,P0,done,core: read_note/write_note + safe join_inside + POSIX normalization; UI uses async open/edit/save
+ORDER-001,体验,Knowledge,Folder order（notes.order.md）解析/写入与拖拽持久化,Obsidian缺失,core+ui,MVP,P0,done,Core parse/format + load/save；UI 已实现同级拖拽 reorder + 目标行描边提示 + 去抖写回（notes）
+UI-001,界面,Knowledge,GPUI 主窗口骨架（Explorer/Editor/Inspector/Bottom）,Zed layout,ui,MVP,P0,partial,GPUI Knowledge window aligned to Xnote.pen；custom titlebar（no native chrome）+ Lucide SVG icons；spacing/padding tuned；layout stabilized（flex_shrink_0 + min_h_0 + ellipsis）避免侧栏/底栏消失与抖动；Explorer indent guides aligned to Xnote.pen（vertical rails; leaf rows no extra twisty slot；root children depth=1 aligns guides with vault chevron）；Obsidian-like sidebars: panel shell/workspace smooth resize via draggable splitters + collapse buttons in panel headers；when collapsed, expand buttons appear at editor tabs leading edge（no tab interaction impact）；tab-bar expand buttons slide+fade in/out；sidebar toggle icons use panel-left/right open/close glyphs；responsive hide when window too narrow；command palette + settings modal（corner tag selection）；Alt+1/Alt+2 switch Explorer/Search；Search match opens at line；vault prompt auto-open when missing + Ctrl+V paste path/query；async open/edit/save
+UI-002,界面,Knowledge,Explorer 虚拟列表/树 + filter（10w 顺滑）,File explorer,ui,MVP,P0,done,Explorer: virtual tree (expand/collapse) + filter; uses core fast scan; same-folder drag reorder with debounced order.md writeback
+UI-003,交互,Knowledge,拖拽排序（同级 reorder + 插入线提示）,N/A,ui,MVP,P0,done,已实现拖拽排序（同级）+ 目标行描边提示 + 去抖写回 order.md
+EDIT-001,编辑器,Knowledge,最小文本编辑（打开/编辑/保存）,Markdown editor,ui,MVP,P0,done,IME-capable editor: cursor/selection + mouse select, arrows/home/end, copy/cut/paste; async read/write + autosave debounce + Ctrl+S
+CMD-001,命令,全局,Command palette（10–20 个核心命令）,Command palette,ui,MVP,P1,done,Command palette（Ctrl+K）+ keyboard navigation；Open vault（Ctrl+O）prompt；Quick Open（Ctrl+P）；Settings；Reload vault；New note；Save；Toggle split；Explorer；Search
+OPEN-001,体验,Knowledge,Quick Open（path/title fuzzy）≤80ms,Pallette,core+ui,MVP,P1,partial,Ctrl+P Quick Open: path substring match（background）+ top 200；TODO fuzzy scoring + P50/P95 sampling
 INDEX-001,索引,Knowledge,Stage B 后台解析：frontmatter/links/tags,Metadata,core,MVP,P1,todo,渐进构建，可取消
 SEARCH-001,索引,Knowledge,关键词搜索（标题/路径/内容）≤200ms,Search,core,MVP,P1,todo,先不做语义
 WATCH-001,核心,Knowledge,Watcher + debounce：外部编辑同步刷新,Watcher,core,MVP,P1,todo,
 WIN-001,应用外壳,窗口,多窗口（新窗口默认 Knowledge）与工作区复用,Workspaces,ui,MVP,P1,todo,
-PERF-001,性能,基准,10w vault 生成器 + 指标采集（启动/搜索/内存）,N/A,xtask,MVP,P0,partial,xtask 已实现 gen-vault + perf(open/scan/order/read)；search 指标预埋 TODO
+PERF-001,性能,基准,10w vault 生成器 + 指标采集（启动/搜索/内存）,N/A,xtask,MVP,P0,done,xtask gen-vault + perf(open/scan/index/order/apply/read/filter/memory); content search metrics still TODO (SEARCH-001)
 REF-001,参考,AI,引入 VCPToolBox/VCPChat 作为架构参考,N/A,repo,Now,P1,done,已归档到 reference/ 并在 design/ai/VCP.md 记录融合点
 REF-002,参考,Resource,引入 QuickLook/QuickLook.Common 作为预览架构参考,N/A,repo,Now,P1,done,已归档到 reference/QuickLook(+QuickLook.Common) 并在 design/resources/QuickLook.md 记录映射点
 AI-001,AI,Core,Variable Registry（VCP-style placeholders）+ 渐进式披露,N/A,core,V2,P2,todo,用于 Context Pack 模板注入（仅暴露当前模块变量）
