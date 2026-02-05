@@ -1,6 +1,13 @@
 use anyhow::{bail, Result};
 use std::path::{Component, Path, PathBuf};
 
+fn strip_leading_dot_slash(mut s: String) -> String {
+  while let Some(rest) = s.strip_prefix("./") {
+    s = rest.to_string();
+  }
+  s
+}
+
 pub fn to_posix_path(path: &Path) -> Result<String> {
   let s = path
     .to_str()
@@ -9,7 +16,9 @@ pub fn to_posix_path(path: &Path) -> Result<String> {
 }
 
 pub fn normalize_vault_rel_path(input: &str) -> Result<String> {
-  let trimmed = input.trim().replace('\\', "/").trim_start_matches('/').to_string();
+  let mut trimmed = input.trim().replace('\\', "/");
+  trimmed = trimmed.trim_start_matches('/').to_string();
+  trimmed = strip_leading_dot_slash(trimmed);
   if trimmed.is_empty() {
     bail!("path is required");
   }
@@ -18,9 +27,9 @@ pub fn normalize_vault_rel_path(input: &str) -> Result<String> {
 }
 
 pub fn normalize_folder_rel_path(input: &str) -> Result<String> {
-  let mut trimmed = input.trim().replace('\\', "/").to_string();
-  trimmed = trimmed.trim_start_matches("./").to_string();
+  let mut trimmed = input.trim().replace('\\', "/");
   trimmed = trimmed.trim_start_matches('/').to_string();
+  trimmed = strip_leading_dot_slash(trimmed);
   trimmed = trimmed.trim_end_matches('/').to_string();
   if trimmed.is_empty() {
     bail!("folder path is required");
@@ -71,8 +80,22 @@ mod tests {
   }
 
   #[test]
+  fn normalize_accepts_leading_dot_slash() {
+    assert_eq!(normalize_vault_rel_path("./a.md").unwrap(), "a.md");
+    assert_eq!(normalize_vault_rel_path("././a.md").unwrap(), "a.md");
+    assert_eq!(normalize_folder_rel_path("./notes/").unwrap(), "notes");
+    assert_eq!(normalize_folder_rel_path("././notes").unwrap(), "notes");
+  }
+
+  #[test]
+  fn normalize_accepts_leading_slashes() {
+    assert_eq!(normalize_vault_rel_path("/a.md").unwrap(), "a.md");
+    assert_eq!(normalize_vault_rel_path("///a.md").unwrap(), "a.md");
+    assert_eq!(normalize_folder_rel_path("/notes/").unwrap(), "notes");
+  }
+
+  #[test]
   fn normalize_converts_backslashes() {
     assert_eq!(normalize_vault_rel_path(r#"a\b.md"#).unwrap(), "a/b.md");
   }
 }
-
