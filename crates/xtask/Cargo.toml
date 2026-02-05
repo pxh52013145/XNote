@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.100"
+sysinfo = "0.30"
 xnote-core = { path = "../xnote-core" }

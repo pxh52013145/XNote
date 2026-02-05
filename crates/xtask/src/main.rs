@@ -1,8 +1,9 @@
 use anyhow::{Context as _, Result, bail};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
+use sysinfo::{Pid, System};
 use xnote_core::vault::Vault;
 
 fn main() -> Result<()> {
@@ -36,7 +37,7 @@ Commands:
 
 Examples:
   cargo run -p xtask -- gen-vault --path .\\Knowledge.vault --notes 100000 --max-depth 200 --clean
-  cargo run -p xtask -- perf --path .\\Knowledge.vault
+  cargo run -p xtask -- perf --path .\\Knowledge.vault --query n0
 
 XNote UI:
   $env:XNOTE_VAULT = "C:\path\to\Knowledge.vault"
@@ -273,6 +274,7 @@ fn shuffle(rng: &mut Rng, items: &mut [String]) {
 
 struct PerfArgs {
   path: PathBuf,
+  query: String,
 }
 
 fn cmd_perf(args: Vec<String>) -> Result<()> {
@@ -286,22 +288,68 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
   let entries = vault.fast_scan_notes()?;
   let scan_ms = scan_start.elapsed().as_millis();
 
-  let mut folders = HashSet::<String>::new();
+  let index_start = Instant::now();
+  let mut by_folder: BTreeMap<String, Vec<String>> = BTreeMap::new();
   for e in &entries {
     let folder = match e.path.rsplit_once('/') {
       Some((folder, _)) => folder.to_string(),
       None => String::new(),
     };
-    folders.insert(folder);
+    by_folder.entry(folder).or_default().push(e.path.clone());
+  }
+  for paths in by_folder.values_mut() {
+    paths.sort();
   }
 
+  let mut child_sets: HashMap<String, HashSet<String>> = HashMap::new();
+  child_sets.entry(String::new()).or_default();
+  let folder_keys: Vec<String> = by_folder.keys().cloned().collect();
+  for folder in folder_keys {
+    if folder.is_empty() {
+      continue;
+    }
+
+    let mut full = folder;
+    loop {
+      let parent = match full.rsplit_once('/') {
+        Some((p, _)) => p.to_string(),
+        None => String::new(),
+      };
+      child_sets
+        .entry(parent.clone())
+        .or_default()
+        .insert(full.clone());
+      if parent.is_empty() {
+        break;
+      }
+      full = parent;
+    }
+  }
+  let index_ms = index_start.elapsed().as_millis();
+
   let order_start = Instant::now();
+  let mut orders: HashMap<String, Vec<String>> = HashMap::new();
   let mut total_order_entries = 0usize;
-  for folder in folders.iter().filter(|f| !f.is_empty()) {
+  for folder in by_folder.keys().filter(|f| !f.is_empty()) {
     let order = vault.load_folder_order(folder)?;
     total_order_entries += order.len();
+    orders.insert(folder.clone(), order);
   }
   let order_ms = order_start.elapsed().as_millis();
+
+  let apply_start = Instant::now();
+  let mut total_ordered_notes = 0usize;
+  for (folder, default_paths) in by_folder.iter_mut() {
+    let ordered_paths = if folder.is_empty() {
+      default_paths.clone()
+    } else {
+      let order = orders.get(folder).map(|v| v.as_slice()).unwrap_or(&[]);
+      apply_folder_order(default_paths, order)
+    };
+    total_ordered_notes += ordered_paths.len();
+    *default_paths = ordered_paths;
+  }
+  let apply_ms = apply_start.elapsed().as_millis();
 
   let read_ms = if let Some(first) = entries.first() {
     let read_start = Instant::now();
@@ -311,15 +359,46 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
     0
   };
 
+  let filter_lower_start = Instant::now();
+  let paths_lower: Vec<String> = entries.iter().map(|e| e.path.to_lowercase()).collect();
+  let lower_ms = filter_lower_start.elapsed().as_millis();
+
+  let query = args.query.trim().to_lowercase();
+  let filter_start = Instant::now();
+  let mut filter_matches = 0usize;
+  if !query.is_empty() {
+    for p in &paths_lower {
+      if p.contains(&query) {
+        filter_matches += 1;
+      }
+    }
+  }
+  let filter_ms = filter_start.elapsed().as_millis();
+
   println!("perf:");
   println!("  path: {}", args.path.display());
   println!("  open_ms: {open_ms}");
   println!("  scan_ms: {scan_ms}");
+  println!("  index_ms: {index_ms}");
   println!("  note_count: {}", entries.len());
-  println!("  folder_count: {}", folders.len());
+  println!("  folder_count_notes: {}", by_folder.len());
+  println!("  folder_count_tree: {}", child_sets.len());
   println!("  order_load_ms: {order_ms}");
+  println!("  order_apply_ms: {apply_ms}");
   println!("  order_total_entries: {total_order_entries}");
+  println!("  order_total_notes_after_apply: {total_ordered_notes}");
   println!("  read_first_note_ms: {read_ms}");
+  println!("  filter_lower_ms: {lower_ms}");
+  println!("  filter_query: {query}");
+  println!("  filter_query_ms: {filter_ms}");
+  println!("  filter_matches: {filter_matches}");
+  if let Some((rss_kb, vmem_kb)) = current_process_memory_kb() {
+    println!("  rss_kb: {rss_kb}");
+    println!("  vmem_kb: {vmem_kb}");
+  } else {
+    println!("  rss_kb: N/A");
+    println!("  vmem_kb: N/A");
+  }
   println!("  search_ms: TODO (SEARCH-001 not implemented)");
 
   Ok(())
@@ -327,14 +406,46 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
 
 fn parse_perf_args(args: Vec<String>) -> Result<PerfArgs> {
   let mut path: Option<PathBuf> = None;
+  let mut query: String = "note".to_string();
   let mut it = args.into_iter();
   while let Some(arg) = it.next() {
     match arg.as_str() {
       "--path" | "--vault" => path = Some(PathBuf::from(it.next().context("--path requires a value")?)),
+      "--query" => query = it.next().context("--query requires a value")?,
       other => bail!("unknown perf arg: {other}"),
     }
   }
   Ok(PerfArgs {
     path: path.unwrap_or_else(|| PathBuf::from("Knowledge.vault")),
+    query,
   })
+}
+
+fn apply_folder_order(default_paths: &[String], order: &[String]) -> Vec<String> {
+  let existing: HashSet<&str> = default_paths.iter().map(|s| s.as_str()).collect();
+  let mut out = Vec::with_capacity(default_paths.len());
+  let mut seen: HashSet<&str> = HashSet::with_capacity(default_paths.len());
+
+  for p in order {
+    let p = p.as_str();
+    if existing.contains(p) && seen.insert(p) {
+      out.push(p.to_string());
+    }
+  }
+  for p in default_paths {
+    let p = p.as_str();
+    if seen.insert(p) {
+      out.push(p.to_string());
+    }
+  }
+
+  out
+}
+
+fn current_process_memory_kb() -> Option<(u64, u64)> {
+  let mut system = System::new();
+  system.refresh_processes();
+  let pid = Pid::from_u32(std::process::id());
+  let process = system.process(pid)?;
+  Some((process.memory(), process.virtual_memory()))
 }
