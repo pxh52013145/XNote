@@ -6689,6 +6689,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ignore",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "xnote-plugin-worker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "xnote-core",
 ]
 
 [[package]]
@@ -6697,6 +6708,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui",
+ "serde_json",
  "xnote-core",
 ]
 

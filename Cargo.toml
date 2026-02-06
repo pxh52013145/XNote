@@ -2,7 +2,7 @@
 members = [
   "crates/xnote-core",
   "crates/xnote-ui",
+  "crates/xnote-plugin-worker",
   "crates/xtask",
 ]
 resolver = "2"
-
