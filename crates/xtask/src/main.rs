@@ -2,9 +2,12 @@ use anyhow::{bail, Context as _, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Instant;
 use sysinfo::{Pid, System};
+use xnote_core::knowledge::{KnowledgeIndex, SearchOptions};
 use xnote_core::vault::Vault;
+use xnote_core::watch::VaultWatchChange;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -16,6 +19,7 @@ fn main() -> Result<()> {
     match cmd.as_str() {
         "gen-vault" => cmd_gen_vault(args.collect()),
         "perf" => cmd_perf(args.collect()),
+        "foundation-gate" => cmd_foundation_gate(args.collect()),
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -33,11 +37,13 @@ fn print_help() {
 
 Commands:
   gen-vault   Generate a large Knowledge vault dataset
-  perf        Print basic perf metrics (open/scan/order/read)
+  perf        Print basic perf metrics (open/scan/index/search/watch)
+  foundation-gate  Run full baseline gate (tests/check/perf profiles)
 
 Examples:
   cargo run -p xtask -- gen-vault --path .\\Knowledge.vault --notes 100000 --max-depth 200 --clean
   cargo run -p xtask -- perf --path .\\Knowledge.vault --query n0
+  cargo run -p xtask -- foundation-gate --path .\\Knowledge.vault --query note --iterations 10
 
 XNote UI:
   $env:XNOTE_VAULT = "C:\path\to\Knowledge.vault"
@@ -310,6 +316,7 @@ fn shuffle(rng: &mut Rng, items: &mut [String]) {
 struct PerfArgs {
     path: PathBuf,
     query: String,
+    iterations: usize,
 }
 
 fn cmd_perf(args: Vec<String>) -> Result<()> {
@@ -410,11 +417,63 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
     }
     let filter_ms = filter_start.elapsed().as_millis();
 
+    let knowledge_build_start = Instant::now();
+    let mut knowledge_index = KnowledgeIndex::build_from_entries(&vault, &entries)?;
+    let knowledge_build_ms = knowledge_build_start.elapsed().as_millis();
+
+    let mut search_samples = Vec::with_capacity(args.iterations);
+    let mut quick_open_samples = Vec::with_capacity(args.iterations);
+    let mut watch_apply_samples = Vec::with_capacity(args.iterations);
+    let search_options = SearchOptions::default();
+
+    for _ in 0..args.iterations {
+        let search_start = Instant::now();
+        let _ = knowledge_index.search(&vault, &query, search_options.clone());
+        search_samples.push(search_start.elapsed().as_millis());
+
+        let quick_open_start = Instant::now();
+        let _ = knowledge_index.quick_open_paths(&query, 200);
+        quick_open_samples.push(quick_open_start.elapsed().as_millis());
+    }
+
+    let watch_target = entries
+        .first()
+        .map(|entry| entry.path.clone())
+        .unwrap_or_else(|| "notes/sample.md".to_string());
+    let watch_changes = vec![
+        VaultWatchChange::NoteChanged {
+            path: watch_target.clone(),
+        },
+        VaultWatchChange::NoteChanged {
+            path: watch_target.clone(),
+        },
+    ];
+
+    let watch_base = vault
+        .read_note(&watch_target)
+        .unwrap_or_else(|_| "# WatchSample\ncontent\n".to_string());
+    let watch_restore = watch_base.clone();
+    let watch_patch = format!("{watch_base}\nwatch-perf-marker\n");
+
+    if entries.first().is_some() {
+        for _ in 0..args.iterations {
+            vault.write_note(&watch_target, &watch_patch)?;
+
+            let watch_start = Instant::now();
+            apply_watch_changes_benchmark(&mut knowledge_index, &vault, watch_changes.clone())?;
+            watch_apply_samples.push(watch_start.elapsed().as_millis());
+
+            vault.write_note(&watch_target, &watch_restore)?;
+        }
+        let _ = knowledge_index.upsert_note(&vault, &watch_target);
+    }
+
     println!("perf:");
     println!("  path: {}", args.path.display());
     println!("  open_ms: {open_ms}");
     println!("  scan_ms: {scan_ms}");
     println!("  index_ms: {index_ms}");
+    println!("  knowledge_index_build_ms: {knowledge_build_ms}");
     println!("  note_count: {}", entries.len());
     println!("  folder_count_notes: {}", by_folder.len());
     println!("  folder_count_tree: {}", child_sets.len());
@@ -434,7 +493,27 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
         println!("  rss_kb: N/A");
         println!("  vmem_kb: N/A");
     }
-    println!("  search_ms: TODO (SEARCH-001 not implemented)");
+    if !search_samples.is_empty() {
+        let p50 = percentile_ms(&search_samples, 50.0);
+        let p95 = percentile_ms(&search_samples, 95.0);
+        println!("  search_samples: {}", search_samples.len());
+        println!("  search_p50_ms: {p50}");
+        println!("  search_p95_ms: {p95}");
+    }
+    if !quick_open_samples.is_empty() {
+        let p50 = percentile_ms(&quick_open_samples, 50.0);
+        let p95 = percentile_ms(&quick_open_samples, 95.0);
+        println!("  quick_open_samples: {}", quick_open_samples.len());
+        println!("  quick_open_p50_ms: {p50}");
+        println!("  quick_open_p95_ms: {p95}");
+    }
+    if !watch_apply_samples.is_empty() {
+        let p50 = percentile_ms(&watch_apply_samples, 50.0);
+        let p95 = percentile_ms(&watch_apply_samples, 95.0);
+        println!("  watch_apply_samples: {}", watch_apply_samples.len());
+        println!("  watch_apply_p50_ms: {p50}");
+        println!("  watch_apply_p95_ms: {p95}");
+    }
 
     Ok(())
 }
@@ -442,6 +521,7 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
 fn parse_perf_args(args: Vec<String>) -> Result<PerfArgs> {
     let mut path: Option<PathBuf> = None;
     let mut query: String = "note".to_string();
+    let mut iterations: usize = 20;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -449,13 +529,210 @@ fn parse_perf_args(args: Vec<String>) -> Result<PerfArgs> {
                 path = Some(PathBuf::from(it.next().context("--path requires a value")?))
             }
             "--query" => query = it.next().context("--query requires a value")?,
+            "--iterations" => {
+                let raw = it.next().context("--iterations requires a value")?;
+                iterations = raw
+                    .parse::<usize>()
+                    .with_context(|| format!("invalid --iterations: {raw}"))?;
+            }
             other => bail!("unknown perf arg: {other}"),
         }
     }
     Ok(PerfArgs {
         path: path.unwrap_or_else(|| PathBuf::from("Knowledge.vault")),
         query,
+        iterations: iterations.max(1),
     })
+}
+
+struct FoundationGateArgs {
+    path: PathBuf,
+    query: String,
+    iterations: usize,
+}
+
+fn cmd_foundation_gate(args: Vec<String>) -> Result<()> {
+    let args = parse_foundation_gate_args(args)?;
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .context("resolve workspace root")?;
+
+    run_command_step(
+        "core-tests",
+        &workspace_root,
+        "cargo",
+        &["test", "-p", "xnote-core"],
+    )?;
+    run_command_step(
+        "ui-check",
+        &workspace_root,
+        "cargo",
+        &["check", "-p", "xnote-ui"],
+    )?;
+    run_command_step(
+        "ui-tests-compile",
+        &workspace_root,
+        "cargo",
+        &["test", "-p", "xnote-ui", "--no-run"],
+    )?;
+    run_command_step(
+        "xtask-check",
+        &workspace_root,
+        "cargo",
+        &["check", "-p", "xtask"],
+    )?;
+
+    let vault = args.path.to_string_lossy().to_string();
+    let iterations = args.iterations.to_string();
+
+    let perf_default_args = vec![
+        "scripts/check_perf_baseline.py".to_string(),
+        "--vault".to_string(),
+        vault.clone(),
+        "--query".to_string(),
+        args.query.clone(),
+        "--iterations".to_string(),
+        iterations.clone(),
+        "--retries".to_string(),
+        "3".to_string(),
+        "--baseline-profile".to_string(),
+        "default".to_string(),
+        "--report-out".to_string(),
+        "perf/latest-report.json".to_string(),
+        "--previous-report".to_string(),
+        "perf/latest-report.json".to_string(),
+        "--delta-report-out".to_string(),
+        "perf/latest-delta-report.json".to_string(),
+    ];
+    let perf_default_args_ref = perf_default_args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    run_command_step(
+        "perf-default-profile",
+        &workspace_root,
+        "python",
+        &perf_default_args_ref,
+    )?;
+
+    let perf_windows_ci_args = vec![
+        "scripts/check_perf_baseline.py".to_string(),
+        "--vault".to_string(),
+        vault,
+        "--query".to_string(),
+        args.query,
+        "--iterations".to_string(),
+        iterations,
+        "--retries".to_string(),
+        "3".to_string(),
+        "--baseline-profile".to_string(),
+        "windows_ci".to_string(),
+        "--report-out".to_string(),
+        "perf/latest-report-windows-ci.json".to_string(),
+        "--previous-report".to_string(),
+        "perf/latest-report-windows-ci.json".to_string(),
+        "--delta-report-out".to_string(),
+        "perf/latest-delta-report-windows-ci.json".to_string(),
+    ];
+    let perf_windows_ci_args_ref = perf_windows_ci_args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    run_command_step(
+        "perf-windows-ci-profile",
+        &workspace_root,
+        "python",
+        &perf_windows_ci_args_ref,
+    )?;
+
+    eprintln!("foundation-gate: OK");
+    Ok(())
+}
+
+fn parse_foundation_gate_args(args: Vec<String>) -> Result<FoundationGateArgs> {
+    let mut path: Option<PathBuf> = None;
+    let mut query: String = "note".to_string();
+    let mut iterations: usize = 10;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--path" | "--vault" => {
+                path = Some(PathBuf::from(it.next().context("--path requires a value")?))
+            }
+            "--query" => query = it.next().context("--query requires a value")?,
+            "--iterations" => {
+                let raw = it.next().context("--iterations requires a value")?;
+                iterations = raw
+                    .parse::<usize>()
+                    .with_context(|| format!("invalid --iterations: {raw}"))?;
+            }
+            other => bail!("unknown foundation-gate arg: {other}"),
+        }
+    }
+
+    Ok(FoundationGateArgs {
+        path: path.unwrap_or_else(|| PathBuf::from("Knowledge.vault")),
+        query,
+        iterations: iterations.max(1),
+    })
+}
+
+fn run_command_step(name: &str, cwd: &std::path::Path, program: &str, args: &[&str]) -> Result<()> {
+    eprintln!("\n==> [{name}] {program} {}", args.join(" "));
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .with_context(|| format!("spawn step failed: {name}"))?;
+    if !status.success() {
+        bail!("step failed: {name}");
+    }
+    Ok(())
+}
+
+fn apply_watch_changes_benchmark(
+    index: &mut KnowledgeIndex,
+    vault: &Vault,
+    changes: Vec<VaultWatchChange>,
+) -> Result<()> {
+    for change in changes {
+        match change {
+            VaultWatchChange::NoteChanged { path } => {
+                if vault.read_note(&path).is_ok() {
+                    index.upsert_note(vault, &path)?;
+                }
+            }
+            VaultWatchChange::NoteRemoved { path } => index.remove_note(&path),
+            VaultWatchChange::NoteMoved { from, to } => {
+                index.remove_note(&from);
+                if vault.read_note(&to).is_ok() {
+                    index.upsert_note(vault, &to)?;
+                }
+            }
+            VaultWatchChange::FolderCreated { .. }
+            | VaultWatchChange::FolderRemoved { .. }
+            | VaultWatchChange::FolderMoved { .. } => {
+                *index = KnowledgeIndex::rebuild_from_vault(vault)?;
+            }
+            VaultWatchChange::RescanRequired => {
+                *index = KnowledgeIndex::rebuild_from_vault(vault)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn percentile_ms(samples: &[u128], percentile: f64) -> u128 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+
+    let rank = ((percentile / 100.0) * ((sorted.len() - 1) as f64)).round() as usize;
+    sorted[rank.min(sorted.len() - 1)]
 }
 
 fn apply_folder_order(default_paths: &[String], order: &[String]) -> Vec<String> {

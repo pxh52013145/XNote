@@ -7,6 +7,8 @@ pub enum CommandId {
     ReloadVault,
     NewNote,
     SaveFile,
+    Undo,
+    Redo,
     ToggleSplit,
     FocusExplorer,
     FocusSearch,
@@ -22,25 +24,37 @@ impl CommandId {
             Self::ReloadVault => "reload_vault",
             Self::NewNote => "new_note",
             Self::SaveFile => "save_file",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
             Self::ToggleSplit => "toggle_split",
             Self::FocusExplorer => "focus_explorer",
             Self::FocusSearch => "focus_search",
         }
     }
 
-    pub fn from_str(input: &str) -> Option<Self> {
+    pub fn parse(input: &str) -> Option<Self> {
+        input.parse().ok()
+    }
+}
+
+impl std::str::FromStr for CommandId {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input.trim() {
-            "open_vault" => Some(Self::OpenVault),
-            "quick_open" => Some(Self::QuickOpen),
-            "command_palette" => Some(Self::CommandPalette),
-            "settings" => Some(Self::Settings),
-            "reload_vault" => Some(Self::ReloadVault),
-            "new_note" => Some(Self::NewNote),
-            "save_file" => Some(Self::SaveFile),
-            "toggle_split" => Some(Self::ToggleSplit),
-            "focus_explorer" => Some(Self::FocusExplorer),
-            "focus_search" => Some(Self::FocusSearch),
-            _ => None,
+            "open_vault" => Ok(Self::OpenVault),
+            "quick_open" => Ok(Self::QuickOpen),
+            "command_palette" => Ok(Self::CommandPalette),
+            "settings" => Ok(Self::Settings),
+            "reload_vault" => Ok(Self::ReloadVault),
+            "new_note" => Ok(Self::NewNote),
+            "save_file" => Ok(Self::SaveFile),
+            "undo" => Ok(Self::Undo),
+            "redo" => Ok(Self::Redo),
+            "toggle_split" => Ok(Self::ToggleSplit),
+            "focus_explorer" => Ok(Self::FocusExplorer),
+            "focus_search" => Ok(Self::FocusSearch),
+            _ => Err(()),
         }
     }
 }
@@ -95,6 +109,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         label_key: "cmd.save_file.label",
         detail_key: "cmd.save_file.detail",
         default_shortcut: "Ctrl+S",
+    },
+    CommandSpec {
+        id: CommandId::Undo,
+        label_key: "cmd.undo.label",
+        detail_key: "cmd.undo.detail",
+        default_shortcut: "Ctrl+Z",
+    },
+    CommandSpec {
+        id: CommandId::Redo,
+        label_key: "cmd.redo.label",
+        detail_key: "cmd.redo.detail",
+        default_shortcut: "Ctrl+Y",
     },
     CommandSpec {
         id: CommandId::ToggleSplit,

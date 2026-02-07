@@ -26,3 +26,22 @@ npm install
 npm run dev
 ```
 
+## Foundation baseline gate
+
+Run once for a full IDE-baseline health check:
+
+```powershell
+cargo run -p xtask -- foundation-gate --path .\Knowledge.vault --query note --iterations 10
+```
+
+or:
+
+```powershell
+pwsh scripts/foundation_gate.ps1
+```
+
+This gate covers:
+- `xnote-core` tests
+- `xnote-ui` compile checks (including test target build)
+- `xtask` compile check
+- perf baseline checks (`default` + `windows_ci`) and delta reports (median of 3 runs for stability)

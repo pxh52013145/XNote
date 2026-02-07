@@ -294,7 +294,7 @@ impl Keymap {
         V: AsRef<str>,
     {
         for (order, (command_id, chord_text)) in entries.into_iter().enumerate() {
-            let Some(command) = CommandId::from_str(command_id.as_ref()) else {
+            let Some(command) = CommandId::parse(command_id.as_ref()) else {
                 return Err(format!("unknown command id: {}", command_id.as_ref()));
             };
             self.bind_with_when(chord_text.as_ref(), command, None, 100, order, true)?;
@@ -314,7 +314,7 @@ impl Keymap {
         W: AsRef<str>,
     {
         for (order, (command_id, chord_text, when)) in entries.into_iter().enumerate() {
-            let Some(command) = CommandId::from_str(command_id.as_ref()) else {
+            let Some(command) = CommandId::parse(command_id.as_ref()) else {
                 return Err(format!("unknown command id: {}", command_id.as_ref()));
             };
             self.bind_with_when(

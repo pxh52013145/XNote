@@ -2,9 +2,10 @@
 name = "xnote-ui"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
-anyhow = "1.0.100"
 gpui = "0.2.2"
 serde_json = "1.0"
 xnote-core = { path = "../xnote-core" }
+anyhow = "1.0.100"

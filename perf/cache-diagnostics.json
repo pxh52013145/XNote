@@ -1,0 +1,50 @@
+{
+  "generated_at_utc_epoch": 1770496328,
+  "version": 2,
+  "snapshots": {
+    "count": 3,
+    "max": 512
+  },
+  "search": {
+    "hits": 0,
+    "misses": 0,
+    "hit_rate_percent": 0.0
+  },
+  "quick_open": {
+    "hits": 0,
+    "misses": 3,
+    "hit_rate_percent": 0.0
+  },
+  "windows": {
+    "short": {
+      "seconds": 300,
+      "search": {
+        "hits": 0,
+        "misses": 0,
+        "total": 0,
+        "hit_rate_percent": 0.0
+      },
+      "quick_open": {
+        "hits": 0,
+        "misses": 3,
+        "total": 3,
+        "hit_rate_percent": 0.0
+      }
+    },
+    "long": {
+      "seconds": 3600,
+      "search": {
+        "hits": 0,
+        "misses": 0,
+        "total": 0,
+        "hit_rate_percent": 0.0
+      },
+      "quick_open": {
+        "hits": 0,
+        "misses": 3,
+        "total": 3,
+        "hit_rate_percent": 0.0
+      }
+    }
+  }
+}

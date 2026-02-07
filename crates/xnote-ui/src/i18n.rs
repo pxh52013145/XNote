@@ -38,10 +38,6 @@ impl I18n {
         }
     }
 
-    pub fn locale(&self) -> Locale {
-        self.locale
-    }
-
     pub fn set_locale(&mut self, locale: Locale) {
         self.locale = locale;
     }
@@ -88,6 +84,10 @@ fn en_us_dict() -> HashMap<&'static str, &'static str> {
         ),
         ("cmd.save_file.label", "Save file"),
         ("cmd.save_file.detail", "Write the current note to disk"),
+        ("cmd.undo.label", "Undo"),
+        ("cmd.undo.detail", "Undo the last edit operation"),
+        ("cmd.redo.label", "Redo"),
+        ("cmd.redo.detail", "Redo the last undone edit operation"),
         ("cmd.toggle_split.label", "Toggle split"),
         ("cmd.toggle_split.detail", "Split the editor view"),
         ("cmd.focus_explorer.label", "Explorer"),
@@ -150,6 +150,10 @@ fn zh_cn_dict() -> HashMap<&'static str, &'static str> {
         ("cmd.new_note.detail", "在当前文件夹创建笔记"),
         ("cmd.save_file.label", "保存文件"),
         ("cmd.save_file.detail", "将当前笔记写入磁盘"),
+        ("cmd.undo.label", "撤销"),
+        ("cmd.undo.detail", "撤销上一次编辑操作"),
+        ("cmd.redo.label", "重做"),
+        ("cmd.redo.detail", "重做被撤销的编辑操作"),
         ("cmd.toggle_split.label", "切换分栏"),
         ("cmd.toggle_split.detail", "切换编辑区分栏"),
         ("cmd.focus_explorer.label", "资源管理器"),

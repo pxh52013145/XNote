@@ -1,0 +1,34 @@
+name: foundation-gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  foundation-gate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate sample vault
+        run: cargo run -p xtask -- gen-vault --path .\\Knowledge.vault --notes 2000 --max-depth 40 --clean
+
+      - name: Run foundation gate
+        run: cargo run -p xtask -- foundation-gate --path Knowledge.vault --query note --iterations 10
+
+      - name: Upload foundation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundation-gate-artifacts
+          path: |
+            perf/latest-report.json
+            perf/latest-delta-report.json
+            perf/latest-report-windows-ci.json
+            perf/latest-delta-report-windows-ci.json
+            perf/baseline.json
+

@@ -15,6 +15,14 @@ pub struct AppSettings {
     #[serde(default = "default_locale_string")]
     pub locale: String,
     #[serde(default)]
+    pub appearance: AppearanceSettings,
+    #[serde(default)]
+    pub editor: EditorSettings,
+    #[serde(default)]
+    pub files_links: FilesLinksSettings,
+    #[serde(default)]
+    pub bookmarked_notes: Vec<String>,
+    #[serde(default)]
     pub keymap_overrides: HashMap<String, String>,
     #[serde(default)]
     pub keymap_contextual: Vec<KeymapRule>,
@@ -42,6 +50,54 @@ pub struct AppPluginPolicy {
     pub runtime_mode: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppearanceSettings {
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_accent")]
+    pub accent: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EditorSettings {
+    #[serde(default = "default_autosave_delay_ms")]
+    pub autosave_delay_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilesLinksSettings {
+    #[serde(default = "default_external_sync")]
+    pub external_sync: bool,
+    #[serde(default = "default_prefer_wikilink_titles")]
+    pub prefer_wikilink_titles: bool,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            accent: default_accent(),
+        }
+    }
+}
+
+impl Default for EditorSettings {
+    fn default() -> Self {
+        Self {
+            autosave_delay_ms: default_autosave_delay_ms(),
+        }
+    }
+}
+
+impl Default for FilesLinksSettings {
+    fn default() -> Self {
+        Self {
+            external_sync: default_external_sync(),
+            prefer_wikilink_titles: default_prefer_wikilink_titles(),
+        }
+    }
+}
+
 impl Default for AppPluginPolicy {
     fn default() -> Self {
         Self {
@@ -58,6 +114,10 @@ impl Default for AppSettings {
         Self {
             schema_version: default_schema_version(),
             locale: default_locale_string(),
+            appearance: AppearanceSettings::default(),
+            editor: EditorSettings::default(),
+            files_links: FilesLinksSettings::default(),
+            bookmarked_notes: Vec::new(),
             keymap_overrides: HashMap::new(),
             keymap_contextual: Vec::new(),
             plugin_policy: AppPluginPolicy::default(),
@@ -106,6 +166,29 @@ impl AppSettings {
 
         if !overlay.locale.trim().is_empty() {
             merged.locale = overlay.locale.clone();
+        }
+
+        if !overlay.appearance.theme.trim().is_empty() {
+            merged.appearance.theme = overlay.appearance.theme.clone();
+        }
+        if !overlay.appearance.accent.trim().is_empty() {
+            merged.appearance.accent = overlay.appearance.accent.clone();
+        }
+
+        merged.editor.autosave_delay_ms = overlay.editor.autosave_delay_ms.max(100);
+        merged.files_links.external_sync = overlay.files_links.external_sync;
+        merged.files_links.prefer_wikilink_titles = overlay.files_links.prefer_wikilink_titles;
+
+        if !overlay.bookmarked_notes.is_empty() {
+            for note in &overlay.bookmarked_notes {
+                if !merged
+                    .bookmarked_notes
+                    .iter()
+                    .any(|existing| existing == note)
+                {
+                    merged.bookmarked_notes.push(note.clone());
+                }
+            }
         }
 
         for (command, chord) in &overlay.keymap_overrides {
@@ -202,6 +285,26 @@ fn default_plugin_runtime_mode() -> String {
     DEFAULT_PLUGIN_RUNTIME_MODE.to_string()
 }
 
+fn default_theme() -> String {
+    "light".to_string()
+}
+
+fn default_accent() -> String {
+    "default".to_string()
+}
+
+const fn default_autosave_delay_ms() -> u64 {
+    500
+}
+
+const fn default_external_sync() -> bool {
+    true
+}
+
+const fn default_prefer_wikilink_titles() -> bool {
+    true
+}
+
 const fn default_max_failed_activations() -> u32 {
     3
 }
@@ -240,8 +343,18 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
         }
 
-        let mut settings = AppSettings::default();
-        settings.locale = "zh-CN".to_string();
+        let mut settings = AppSettings {
+            locale: "zh-CN".to_string(),
+            appearance: AppearanceSettings {
+                theme: "dark".to_string(),
+                accent: "blue".to_string(),
+            },
+            ..AppSettings::default()
+        };
+        settings.editor.autosave_delay_ms = 1200;
+        settings.files_links.external_sync = false;
+        settings.files_links.prefer_wikilink_titles = false;
+        settings.bookmarked_notes.push("notes/Alpha.md".to_string());
         settings
             .keymap_overrides
             .insert("open_vault".to_string(), "Ctrl+Shift+O".to_string());
@@ -284,14 +397,24 @@ mod tests {
             let _ = fs::remove_dir_all(&project_dir);
         }
 
-        let mut user = AppSettings::default();
-        user.locale = "en-US".to_string();
+        let mut user = AppSettings {
+            locale: "en-US".to_string(),
+            ..AppSettings::default()
+        };
         user.keymap_overrides
             .insert("open_vault".to_string(), "Ctrl+O".to_string());
         save_settings(&user_dir, &user).expect("save user settings");
 
-        let mut project = AppSettings::default();
-        project.locale = "zh-CN".to_string();
+        let mut project = AppSettings {
+            locale: "zh-CN".to_string(),
+            appearance: AppearanceSettings {
+                theme: "dark".to_string(),
+                ..AppearanceSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        project.editor.autosave_delay_ms = 900;
+        project.bookmarked_notes.push("notes/Beta.md".to_string());
         project
             .keymap_overrides
             .insert("open_vault".to_string(), "Ctrl+Shift+O".to_string());
@@ -300,6 +423,12 @@ mod tests {
         let effective = load_effective_settings(&user_dir, Some(&project_dir))
             .expect("load effective settings");
         assert_eq!(effective.locale, "zh-CN");
+        assert_eq!(effective.appearance.theme, "dark");
+        assert_eq!(effective.editor.autosave_delay_ms, 900);
+        assert!(effective
+            .bookmarked_notes
+            .iter()
+            .any(|path| path == "notes/Beta.md"));
         assert_eq!(
             effective
                 .keymap_overrides

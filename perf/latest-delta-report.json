@@ -1,0 +1,140 @@
+{
+  "generated_at_utc": "2026-02-07T21:38:55.106820+00:00",
+  "baseline_profile": "default",
+  "previous_report": "perf/latest-report.json",
+  "metric_delta": {
+    "status": "ok",
+    "metrics": {
+      "filter_lower_ms": {
+        "previous": 0,
+        "current": 0,
+        "delta": 0
+      },
+      "filter_matches": {
+        "previous": 1006,
+        "current": 1006,
+        "delta": 0
+      },
+      "filter_query_ms": {
+        "previous": 0,
+        "current": 0,
+        "delta": 0
+      },
+      "folder_count_notes": {
+        "previous": 5,
+        "current": 5,
+        "delta": 0
+      },
+      "folder_count_tree": {
+        "previous": 4,
+        "current": 4,
+        "delta": 0
+      },
+      "index_ms": {
+        "previous": 0,
+        "current": 0,
+        "delta": 0
+      },
+      "knowledge_index_build_ms": {
+        "previous": 712,
+        "current": 712,
+        "delta": 0
+      },
+      "note_count": {
+        "previous": 1006,
+        "current": 1006,
+        "delta": 0
+      },
+      "open_ms": {
+        "previous": 0,
+        "current": 0,
+        "delta": 0
+      },
+      "order_apply_ms": {
+        "previous": 0,
+        "current": 0,
+        "delta": 0
+      },
+      "order_load_ms": {
+        "previous": 0,
+        "current": 0,
+        "delta": 0
+      },
+      "order_total_entries": {
+        "previous": 77,
+        "current": 77,
+        "delta": 0
+      },
+      "order_total_notes_after_apply": {
+        "previous": 1006,
+        "current": 1006,
+        "delta": 0
+      },
+      "quick_open_p50_ms": {
+        "previous": 5,
+        "current": 5,
+        "delta": 0
+      },
+      "quick_open_p95_ms": {
+        "previous": 5,
+        "current": 5,
+        "delta": 0
+      },
+      "quick_open_samples": {
+        "previous": 1,
+        "current": 1,
+        "delta": 0
+      },
+      "read_first_note_ms": {
+        "previous": 0,
+        "current": 0,
+        "delta": 0
+      },
+      "rss_kb": {
+        "previous": 18386944,
+        "current": 18386944,
+        "delta": 0
+      },
+      "scan_ms": {
+        "previous": 81,
+        "current": 81,
+        "delta": 0
+      },
+      "search_p50_ms": {
+        "previous": 8,
+        "current": 8,
+        "delta": 0
+      },
+      "search_p95_ms": {
+        "previous": 8,
+        "current": 8,
+        "delta": 0
+      },
+      "search_samples": {
+        "previous": 1,
+        "current": 1,
+        "delta": 0
+      },
+      "vmem_kb": {
+        "previous": 4410552320,
+        "current": 4410552320,
+        "delta": 0
+      },
+      "watch_apply_p50_ms": {
+        "previous": 1,
+        "current": 1,
+        "delta": 0
+      },
+      "watch_apply_p95_ms": {
+        "previous": 1,
+        "current": 1,
+        "delta": 0
+      },
+      "watch_apply_samples": {
+        "previous": 1,
+        "current": 1,
+        "delta": 0
+      }
+    }
+  }
+}

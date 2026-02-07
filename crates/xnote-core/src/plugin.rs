@@ -558,6 +558,14 @@ impl ProcessPluginRuntime {
         format!("{prefix}:{plugin_id}:{}", self.request_sequence)
     }
 
+    fn activation_watchdog_tick(&self) -> Duration {
+        Duration::from_millis(self.config.normalized_watchdog_interval_ms())
+    }
+
+    fn activation_deadline(&self, started_at: Instant, spec: RuntimeActivationSpec) -> Instant {
+        started_at + Duration::from_millis(spec.timeout_ms)
+    }
+
     fn touch_session_key(&mut self, session_key: &str) {
         self.session_order
             .retain(|existing| existing != session_key);
@@ -745,7 +753,6 @@ impl ProcessPluginRuntime {
         spec: RuntimeActivationSpec,
         deadline: Instant,
         cancellation: &ActivationCancellation,
-        watchdog_tick: Duration,
         request_id: String,
     ) -> RuntimeStatus {
         let activate_message = PluginWireMessage::Activate {
@@ -765,7 +772,7 @@ impl ProcessPluginRuntime {
             deadline,
             cancellation,
             Some(&request_id),
-            watchdog_tick,
+            self.activation_watchdog_tick(),
         ) {
             Ok(PluginWireMessage::ActivateResult {
                 request_id: _,
@@ -833,8 +840,8 @@ impl PluginRuntime for ProcessPluginRuntime {
             self.evict_idle_sessions();
         }
 
-        let watchdog_tick = Duration::from_millis(self.config.normalized_watchdog_interval_ms());
-        let deadline = started_at + Duration::from_millis(spec.timeout_ms);
+        let watchdog_tick = self.activation_watchdog_tick();
+        let deadline = self.activation_deadline(started_at, spec);
         let session_key = Self::session_key(manifest);
         let mut needs_handshake = true;
 
@@ -913,7 +920,6 @@ impl PluginRuntime for ProcessPluginRuntime {
             spec,
             deadline,
             cancellation,
-            watchdog_tick,
             activation_request_id,
         );
         session.last_used_at = Instant::now();

@@ -1,8 +1,12 @@
 pub mod command;
+pub mod editor;
 pub mod keybind;
+pub mod knowledge;
+pub mod markdown;
 pub mod paths;
 pub mod plugin;
 pub mod plugin_protocol;
 pub mod plugin_transport;
 pub mod settings;
 pub mod vault;
+pub mod watch;

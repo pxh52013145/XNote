@@ -1,0 +1,19 @@
+{
+  "profiles": {
+    "default": {
+      "scan_ms": 400,
+      "knowledge_index_build_ms": 9000,
+      "search_p95_ms": 80,
+      "quick_open_p95_ms": 50,
+      "watch_apply_p95_ms": 80
+    },
+    "windows_ci": {
+      "scan_ms": 600,
+      "knowledge_index_build_ms": 12000,
+      "search_p95_ms": 120,
+      "quick_open_p95_ms": 80,
+      "watch_apply_p95_ms": 120
+    }
+  }
+}
+

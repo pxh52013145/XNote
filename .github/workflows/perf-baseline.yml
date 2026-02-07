@@ -1,0 +1,42 @@
+name: perf-baseline
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  perf-baseline:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate sample vault
+        run: cargo run -p xtask -- gen-vault --path .\\Knowledge.vault --notes 2000 --max-depth 40 --clean
+
+      - name: Download previous perf report
+        id: download_prev
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          workflow: perf-baseline.yml
+          branch: ${{ github.ref_name }}
+          name: perf-baseline-report
+          path: perf/previous
+          if_no_artifact_found: warn
+
+      - name: Check perf baseline
+        run: python scripts/check_perf_baseline.py --vault Knowledge.vault --query note --iterations 15 --retries 3 --baseline-profile windows_ci --report-out perf/latest-report.json --previous-report perf/previous/latest-report.json --delta-report-out perf/latest-delta-report.json
+
+      - name: Upload perf report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline-report
+          path: |
+            perf/latest-report.json
+            perf/latest-delta-report.json
+            perf/baseline.json
