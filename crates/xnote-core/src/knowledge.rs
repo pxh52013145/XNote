@@ -947,7 +947,10 @@ Body with [[Linked/Note]] and #tag_one #tag-two.
             .iter()
             .position(|path| path == "notes/very/deep/path/Plan.md");
 
-        assert!(short_ix.is_some() && deep_ix.is_some(), "both matches should exist");
+        assert!(
+            short_ix.is_some() && deep_ix.is_some(),
+            "both matches should exist"
+        );
         assert!(
             short_ix < deep_ix,
             "shorter path should rank before deeper path on score ties"

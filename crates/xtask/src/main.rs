@@ -7,7 +7,10 @@ use std::time::Instant;
 use sysinfo::{Pid, System};
 use xnote_core::knowledge::{KnowledgeIndex, SearchOptions};
 use xnote_core::vault::Vault;
-use xnote_core::watch::VaultWatchChange;
+use xnote_core::watch::{
+    collapse_move_pairs, expand_folder_move_pairs_to_note_moves, note_path_has_folder_prefix,
+    VaultWatchChange,
+};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -424,6 +427,9 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
     let mut search_samples = Vec::with_capacity(args.iterations);
     let mut quick_open_samples = Vec::with_capacity(args.iterations);
     let mut watch_apply_samples = Vec::with_capacity(args.iterations);
+    let watch_txn_sample_count = args.iterations.min(3).max(1);
+    let mut watch_txn_apply_samples = Vec::with_capacity(watch_txn_sample_count);
+    let mut watch_txn_rebuild_samples = Vec::with_capacity(watch_txn_sample_count);
     let search_options = SearchOptions::default();
 
     for _ in 0..args.iterations {
@@ -460,12 +466,30 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
             vault.write_note(&watch_target, &watch_patch)?;
 
             let watch_start = Instant::now();
-            apply_watch_changes_benchmark(&mut knowledge_index, &vault, watch_changes.clone())?;
+            let _ =
+                apply_watch_changes_benchmark(&mut knowledge_index, &vault, watch_changes.clone())?;
             watch_apply_samples.push(watch_start.elapsed().as_millis());
 
             vault.write_note(&watch_target, &watch_restore)?;
         }
         let _ = knowledge_index.upsert_note(&vault, &watch_target);
+    }
+
+    let watch_txn_batch_dirs = 1_024usize;
+    let watch_txn_changes = synthesize_watch_txn_replay_changes(
+        &entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>(),
+        watch_txn_batch_dirs,
+    );
+    let mut watch_txn_index = knowledge_index.clone();
+    for _ in 0..watch_txn_sample_count {
+        let watch_txn_started = Instant::now();
+        let watch_txn_stats =
+            apply_watch_changes_benchmark(&mut watch_txn_index, &vault, watch_txn_changes.clone())?;
+        watch_txn_apply_samples.push(watch_txn_started.elapsed().as_millis());
+        watch_txn_rebuild_samples.push(watch_txn_stats.rebuild_count as u128);
     }
 
     println!("perf:");
@@ -513,6 +537,23 @@ fn cmd_perf(args: Vec<String>) -> Result<()> {
         println!("  watch_apply_samples: {}", watch_apply_samples.len());
         println!("  watch_apply_p50_ms: {p50}");
         println!("  watch_apply_p95_ms: {p95}");
+    }
+    println!("  watch_txn_batch_dirs: {watch_txn_batch_dirs}");
+    println!("  watch_txn_batch_changes: {}", watch_txn_changes.len());
+    if !watch_txn_apply_samples.is_empty() {
+        let p50 = percentile_ms(&watch_txn_apply_samples, 50.0);
+        let p95 = percentile_ms(&watch_txn_apply_samples, 95.0);
+        println!(
+            "  watch_txn_apply_samples: {}",
+            watch_txn_apply_samples.len()
+        );
+        println!("  watch_txn_apply_ms: {p50}");
+        println!("  watch_txn_apply_p50_ms: {p50}");
+        println!("  watch_txn_apply_p95_ms: {p95}");
+    }
+    if !watch_txn_rebuild_samples.is_empty() {
+        let p95 = percentile_ms(&watch_txn_rebuild_samples, 95.0);
+        println!("  watch_txn_rebuild_p95: {p95}");
     }
 
     Ok(())
@@ -692,36 +733,340 @@ fn run_command_step(name: &str, cwd: &std::path::Path, program: &str, args: &[&s
     Ok(())
 }
 
+fn synthesize_watch_txn_replay_changes(
+    existing_note_paths: &[String],
+    batch_dirs: usize,
+) -> Vec<VaultWatchChange> {
+    let dir_count = batch_dirs.max(1_024);
+    let note_sample_count = existing_note_paths.len().min(256);
+    let mut changes = Vec::with_capacity(dir_count * 4 + note_sample_count);
+
+    for i in 0..dir_count {
+        let source = format!("notes/__watch_txn_batch/d{i:04}");
+        let stage = format!("notes/__watch_txn_batch_stage/d{i:04}");
+        let target = format!("notes/__watch_txn_batch_final/d{i:04}");
+
+        changes.push(VaultWatchChange::FolderCreated {
+            path: source.clone(),
+        });
+        changes.push(VaultWatchChange::FolderMoved {
+            from: source,
+            to: stage.clone(),
+        });
+        changes.push(VaultWatchChange::FolderMoved {
+            from: stage,
+            to: target.clone(),
+        });
+
+        if i % 6 == 0 {
+            changes.push(VaultWatchChange::FolderRemoved { path: target });
+        }
+
+        if note_sample_count > 0 {
+            changes.push(VaultWatchChange::NoteChanged {
+                path: existing_note_paths[i % note_sample_count].clone(),
+            });
+        }
+    }
+
+    changes
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct WatchApplyBenchmarkStats {
+    note_upsert_count: usize,
+    note_remove_count: usize,
+    note_move_count: usize,
+    rebuild_count: usize,
+}
+
 fn apply_watch_changes_benchmark(
     index: &mut KnowledgeIndex,
     vault: &Vault,
     changes: Vec<VaultWatchChange>,
-) -> Result<()> {
+) -> Result<WatchApplyBenchmarkStats> {
+    let mut stats = WatchApplyBenchmarkStats::default();
+    let mut needs_rebuild = false;
+    let mut note_changed_set: HashSet<String> = HashSet::new();
+    let mut note_removed_set: HashSet<String> = HashSet::new();
+    let mut note_moves: HashMap<String, String> = HashMap::new();
+    let mut folder_removed_set: HashSet<String> = HashSet::new();
+    let mut folder_moves: HashMap<String, String> = HashMap::new();
+
     for change in changes {
         match change {
             VaultWatchChange::NoteChanged { path } => {
-                if vault.read_note(&path).is_ok() {
-                    index.upsert_note(vault, &path)?;
-                }
+                note_changed_set.insert(path);
             }
-            VaultWatchChange::NoteRemoved { path } => index.remove_note(&path),
+            VaultWatchChange::NoteRemoved { path } => {
+                note_removed_set.insert(path);
+            }
             VaultWatchChange::NoteMoved { from, to } => {
-                index.remove_note(&from);
-                if vault.read_note(&to).is_ok() {
-                    index.upsert_note(vault, &to)?;
+                if from != to {
+                    note_moves.insert(from, to);
                 }
             }
-            VaultWatchChange::FolderCreated { .. }
-            | VaultWatchChange::FolderRemoved { .. }
-            | VaultWatchChange::FolderMoved { .. } => {
-                *index = KnowledgeIndex::rebuild_from_vault(vault)?;
+            VaultWatchChange::FolderCreated { .. } => {}
+            VaultWatchChange::FolderRemoved { path } => {
+                folder_removed_set.insert(path);
+            }
+            VaultWatchChange::FolderMoved { from, to } => {
+                if from != to {
+                    folder_moves.insert(from, to);
+                }
             }
             VaultWatchChange::RescanRequired => {
-                *index = KnowledgeIndex::rebuild_from_vault(vault)?;
+                needs_rebuild = true;
+                break;
             }
         }
     }
-    Ok(())
+
+    if needs_rebuild {
+        *index = KnowledgeIndex::rebuild_from_vault(vault)?;
+        stats.rebuild_count = 1;
+        return Ok(stats);
+    }
+
+    let note_moves_vec = match collapse_move_pairs(&note_moves.into_iter().collect::<Vec<_>>()) {
+        Some(moves) => moves,
+        None => {
+            *index = KnowledgeIndex::rebuild_from_vault(vault)?;
+            stats.rebuild_count = 1;
+            return Ok(stats);
+        }
+    };
+
+    let folder_moves_vec = match collapse_move_pairs(&folder_moves.into_iter().collect::<Vec<_>>())
+    {
+        Some(moves) => moves,
+        None => {
+            *index = KnowledgeIndex::rebuild_from_vault(vault)?;
+            stats.rebuild_count = 1;
+            return Ok(stats);
+        }
+    };
+
+    let mut folder_removed_vec = folder_removed_set.into_iter().collect::<Vec<_>>();
+    folder_removed_vec.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+
+    let existing_paths = index.all_paths_sorted();
+
+    let has_relevant_folder_move = folder_moves_vec.iter().any(|(from, _)| {
+        existing_paths
+            .iter()
+            .any(|path| note_path_has_folder_prefix(path, from))
+    });
+    let has_relevant_folder_remove = folder_removed_vec.iter().any(|prefix| {
+        existing_paths
+            .iter()
+            .any(|path| note_path_has_folder_prefix(path, prefix))
+    });
+
+    let folder_expanded_note_moves = if has_relevant_folder_move {
+        match expand_folder_move_pairs_to_note_moves(&existing_paths, &folder_moves_vec) {
+            Some(moves) => moves.into_iter().collect::<HashMap<_, _>>(),
+            None => {
+                *index = KnowledgeIndex::rebuild_from_vault(vault)?;
+                stats.rebuild_count = 1;
+                return Ok(stats);
+            }
+        }
+    } else {
+        HashMap::new()
+    };
+
+    if has_relevant_folder_move || has_relevant_folder_remove {
+        for old_path in existing_paths {
+            let moved_path = folder_expanded_note_moves
+                .get(&old_path)
+                .cloned()
+                .unwrap_or_else(|| old_path.clone());
+
+            let removed_by_folder = folder_removed_vec
+                .iter()
+                .any(|prefix| note_path_has_folder_prefix(&moved_path, prefix));
+            if removed_by_folder {
+                index.remove_note(&old_path);
+                stats.note_remove_count += 1;
+                continue;
+            }
+
+            if moved_path != old_path {
+                index.remove_note(&old_path);
+                stats.note_remove_count += 1;
+                if vault.read_note(&moved_path).is_ok() {
+                    index.upsert_note(vault, &moved_path)?;
+                    stats.note_upsert_count += 1;
+                    stats.note_move_count += 1;
+                }
+            }
+        }
+    }
+
+    for path in note_removed_set {
+        index.remove_note(&path);
+        stats.note_remove_count += 1;
+    }
+
+    for (from, to) in note_moves_vec {
+        index.remove_note(&from);
+        stats.note_remove_count += 1;
+        if vault.read_note(&to).is_ok() {
+            index.upsert_note(vault, &to)?;
+            stats.note_upsert_count += 1;
+        }
+        stats.note_move_count += 1;
+    }
+
+    for path in note_changed_set {
+        if vault.read_note(&path).is_ok() {
+            index.upsert_note(vault, &path)?;
+            stats.note_upsert_count += 1;
+        }
+    }
+
+    Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_vault_root(name: &str) -> PathBuf {
+        let mut root = std::env::temp_dir();
+        let now_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        root.push(format!(
+            "xnote_xtask_{name}_{}_{}",
+            std::process::id(),
+            now_nanos
+        ));
+        root
+    }
+
+    #[test]
+    fn synthesize_watch_txn_replay_changes_uses_1k_plus_directory_batch() {
+        let sample_notes = vec!["notes/a.md".to_string(), "notes/b.md".to_string()];
+        let changes = synthesize_watch_txn_replay_changes(&sample_notes, 1_024);
+
+        let folder_ops = changes
+            .iter()
+            .filter(|change| {
+                matches!(
+                    change,
+                    VaultWatchChange::FolderCreated { .. }
+                        | VaultWatchChange::FolderMoved { .. }
+                        | VaultWatchChange::FolderRemoved { .. }
+                )
+            })
+            .count();
+        assert!(
+            folder_ops >= 1_024,
+            "expected >= 1024 folder ops, got {folder_ops}"
+        );
+        assert!(
+            changes.len() > folder_ops,
+            "should include mixed note changes"
+        );
+    }
+
+    #[test]
+    fn apply_watch_changes_benchmark_skips_rebuild_for_irrelevant_large_folder_batch() {
+        let root = temp_vault_root("watch_replay_skip_rebuild_irrelevant");
+        fs::create_dir_all(root.join("notes")).expect("create notes");
+        fs::write(root.join("notes").join("alpha.md"), "# Alpha\n").expect("write alpha");
+        fs::write(root.join("notes").join("beta.md"), "# Beta\n").expect("write beta");
+
+        let vault = Vault::open(&root).expect("open vault");
+        let entries = vault.fast_scan_notes().expect("scan notes");
+        let mut index =
+            KnowledgeIndex::build_from_entries(&vault, &entries).expect("build knowledge index");
+        let base_note_count = index.note_count();
+
+        let changes = synthesize_watch_txn_replay_changes(
+            &entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>(),
+            1_024,
+        );
+        let stats = apply_watch_changes_benchmark(&mut index, &vault, changes)
+            .expect("apply watch changes");
+
+        assert_eq!(stats.rebuild_count, 0);
+        assert_eq!(index.note_count(), base_note_count);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_watch_changes_benchmark_note_only_stays_incremental() {
+        let root = temp_vault_root("watch_replay_note_only");
+        fs::create_dir_all(root.join("notes")).expect("create notes");
+        fs::write(root.join("notes").join("draft.md"), "# Draft\nold\n").expect("write draft");
+
+        let vault = Vault::open(&root).expect("open vault");
+        let entries = vault.fast_scan_notes().expect("scan notes");
+        let mut index =
+            KnowledgeIndex::build_from_entries(&vault, &entries).expect("build knowledge index");
+
+        vault
+            .write_note("notes/draft.md", "# Draft\nnew\n")
+            .expect("rewrite draft");
+        let stats = apply_watch_changes_benchmark(
+            &mut index,
+            &vault,
+            vec![VaultWatchChange::NoteChanged {
+                path: "notes/draft.md".to_string(),
+            }],
+        )
+        .expect("apply note change");
+
+        assert_eq!(stats.rebuild_count, 0);
+        assert_eq!(stats.note_upsert_count, 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_watch_changes_benchmark_applies_folder_move_incrementally() {
+        let root = temp_vault_root("watch_replay_folder_move_incremental");
+        fs::create_dir_all(root.join("notes").join("a")).expect("create notes/a");
+        fs::write(root.join("notes").join("a").join("moved.md"), "# Move\n").expect("write moved");
+
+        let vault = Vault::open(&root).expect("open vault");
+        let entries = vault.fast_scan_notes().expect("scan notes");
+        let mut index =
+            KnowledgeIndex::build_from_entries(&vault, &entries).expect("build knowledge index");
+
+        fs::create_dir_all(root.join("notes").join("b")).expect("create notes/b");
+        fs::rename(
+            root.join("notes").join("a").join("moved.md"),
+            root.join("notes").join("b").join("moved.md"),
+        )
+        .expect("move note");
+        let _ = fs::remove_dir_all(root.join("notes").join("a"));
+
+        let stats = apply_watch_changes_benchmark(
+            &mut index,
+            &vault,
+            vec![VaultWatchChange::FolderMoved {
+                from: "notes/a".to_string(),
+                to: "notes/b".to_string(),
+            }],
+        )
+        .expect("apply folder move");
+
+        assert_eq!(stats.rebuild_count, 0);
+        assert!(index.note_summary("notes/a/moved.md").is_none());
+        assert!(index.note_summary("notes/b/moved.md").is_some());
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 fn percentile_ms(samples: &[u128], percentile: f64) -> u128 {

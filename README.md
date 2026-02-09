@@ -45,3 +45,5 @@ This gate covers:
 - `xnote-ui` compile checks (including test target build)
 - `xtask` compile check
 - perf baseline checks (`default` + `windows_ci`) and delta reports (median of 3 runs for stability)
+
+`xtask perf` also includes a filesystem watch transaction replay stress section for **1k+ directory batch changes** (`watch_txn_*` metrics), and now uses prefix-incremental folder replay in benchmark apply path to reduce full-rebuild pressure.

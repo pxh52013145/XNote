@@ -131,6 +131,12 @@ fn en_us_dict() -> HashMap<&'static str, &'static str> {
         ("palette.placeholder.quick_open", "Type to search…"),
         ("palette.group.navigation", "NAVIGATION"),
         ("palette.group.files", "FILES"),
+        ("palette.title.search", "SEARCH"),
+        (
+            "palette.placeholder.search",
+            "Type keywords to search content…",
+        ),
+        ("palette.group.search", "SEARCH RESULTS"),
     ])
 }
 
@@ -191,5 +197,8 @@ fn zh_cn_dict() -> HashMap<&'static str, &'static str> {
         ("palette.placeholder.quick_open", "输入以搜索…"),
         ("palette.group.navigation", "导航"),
         ("palette.group.files", "文件"),
+        ("palette.title.search", "搜索"),
+        ("palette.placeholder.search", "输入关键词搜索内容…"),
+        ("palette.group.search", "搜索结果"),
     ])
 }

@@ -2,12 +2,13 @@ mod i18n;
 
 use gpui::{
     div, ease_in_out, fill, point, prelude::*, px, radians, relative, rgb, rgba, size, svg,
-    uniform_list, Animation, AnimationExt as _, App, Application, AssetSource, AvailableSpace,
-    Bounds, ClickEvent, ClipboardItem, Context, CursorStyle, DragMoveEvent, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, FontWeight, GlobalElementId,
-    KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, SharedString, Size, Style, Task, TextRun, Timer, Transformation, UTF16Selection,
-    UnderlineStyle, Window, WindowBounds, WindowControlArea, WindowOptions,
+    uniform_list, Animation, AnimationExt as _, AnyView, App, Application, AssetSource,
+    AvailableSpace, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle, DragMoveEvent,
+    Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, FontWeight,
+    GlobalElementId, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, Pixels, Point, SharedString, Size, Style, Task, TextRun, Timer,
+    Transformation, UTF16Selection, UnderlineStyle, Window, WindowBounds, WindowControlArea,
+    WindowOptions,
 };
 use i18n::{I18n, Locale};
 use serde_json::json;
@@ -29,12 +30,8 @@ use xnote_core::keybind::KeyContext;
 use xnote_core::keybind::Keymap;
 use xnote_core::knowledge::{KnowledgeIndex, SearchOptions};
 use xnote_core::markdown::{
-    lint_markdown,
-    parse_markdown,
-    MarkdownDiagnostic,
-    MarkdownDiagnosticSeverity,
-    MarkdownInvalidationWindow,
-    MarkdownParseResult,
+    lint_markdown, parse_markdown, MarkdownDiagnostic, MarkdownDiagnosticSeverity,
+    MarkdownInvalidationWindow, MarkdownParseResult,
 };
 use xnote_core::paths::{join_inside, normalize_folder_rel_path, normalize_vault_rel_path};
 use xnote_core::plugin::{
@@ -43,10 +40,10 @@ use xnote_core::plugin::{
 };
 use xnote_core::settings::{
     load_effective_settings, project_settings_path, save_project_settings, save_settings,
-    settings_path, AppSettings,
+    settings_path, AppSettings, WindowLayoutSettings,
 };
 use xnote_core::vault::{NoteEntry, Vault, VaultScan};
-use xnote_core::watch::{VaultWatchChange, VaultWatcher};
+use xnote_core::watch::{expand_note_move_pairs_with_prefix, VaultWatchChange, VaultWatcher};
 
 const ICON_BOOKMARK: &str = "icons/bookmark.svg";
 const ICON_BRUSH: &str = "icons/brush.svg";
@@ -87,6 +84,8 @@ const WATCH_EVENT_DRAIN_INTERVAL: Duration = Duration::from_millis(120);
 const WATCH_EVENT_BATCH_MAX: usize = 512;
 const SEARCH_QUERY_CACHE_CAPACITY: usize = 64;
 const QUICK_OPEN_CACHE_CAPACITY: usize = 64;
+const NOTE_CONTENT_CACHE_CAPACITY: usize = 96;
+const RECENT_QUERY_HISTORY_CAPACITY: usize = 8;
 const CACHE_DIAGNOSTICS_FLUSH_INTERVAL: Duration = Duration::from_secs(20);
 const CACHE_DIAGNOSTICS_PATH: &str = "perf/cache-diagnostics.json";
 const CACHE_DIAGNOSTICS_SHORT_WINDOW_SECS: u64 = 5 * 60;
@@ -99,17 +98,89 @@ const MARKDOWN_INVALIDATION_CONTEXT_BYTES: usize = 256;
 const EDIT_LATENCY_SAMPLES_CAPACITY: usize = 256;
 const MAX_EDITOR_HIGHLIGHT_BYTES: usize = 256 * 1024;
 const CREATE_RECONCILE_DELAY: Duration = Duration::from_millis(900);
-const EDITOR_GUTTER_BASE_WIDTH: f32 = 14.0;
-const EDITOR_GUTTER_DIGIT_WIDTH: f32 = 7.0;
+const EDITOR_GUTTER_BASE_WIDTH: f32 = 3.0;
+const EDITOR_GUTTER_DIGIT_WIDTH: f32 = 5.0;
 const EDITOR_GUTTER_LINE_HEIGHT: f32 = 20.0;
-const EDITOR_TEXT_LEFT_PADDING: f32 = 8.0;
+const EDITOR_TEXT_LEFT_PADDING: f32 = 5.0;
 const EDITOR_TEXT_MIN_WRAP_WIDTH: f32 = 40.0;
+const EDITOR_SURFACE_LEFT_PADDING: f32 = 0.0;
+const EDITOR_SURFACE_RIGHT_PADDING: f32 = 18.0;
+const EDITOR_GUTTER_STABLE_DIGITS_MAX_9999: usize = 4;
+const WINDOW_LAYOUT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(320);
+const WINDOW_DEFAULT_WIDTH_PX: u32 = 1200;
+const WINDOW_DEFAULT_HEIGHT_PX: u32 = 760;
+const WINDOW_MIN_WIDTH_PX: u32 = 820;
+const WINDOW_MIN_HEIGHT_PX: u32 = 540;
+const PANEL_SHELL_MIN_WIDTH: f32 = 150.0;
+const WORKSPACE_MIN_WIDTH: f32 = 180.0;
+const EXPLORER_HEADER_ACTION_SIZE: f32 = 20.0;
+const EXPLORER_HEADER_ICON_SIZE: f32 = 14.0;
+const EDITOR_SPLIT_MIN_RATIO: f32 = 0.25;
+const EDITOR_SPLIT_MAX_RATIO: f32 = 0.75;
+const EDITOR_SPLIT_MIN_PANE_WIDTH: f32 = 220.0;
+const INACTIVE_GROUP_PREVIEW_MAX_LINES: usize = 320;
+const INACTIVE_GROUP_PREVIEW_MAX_LINE_CHARS: usize = 512;
+const EDITOR_GROUP_MRU_CAPACITY: usize = 24;
+const EDITOR_SPLIT_RATIO_SCALE: f32 = 1000.0;
+const EDITOR_SPLIT_DIRECTION_DOWN: &str = "down";
+const EDITOR_SPLIT_DIRECTION_RIGHT: &str = "right";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EditorViewMode {
     Edit,
     Preview,
     Split,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditorSplitDirection {
+    Right,
+    Down,
+}
+
+impl EditorSplitDirection {
+    fn to_tag(self) -> &'static str {
+        match self {
+            Self::Right => EDITOR_SPLIT_DIRECTION_RIGHT,
+            Self::Down => EDITOR_SPLIT_DIRECTION_DOWN,
+        }
+    }
+
+    fn from_tag(tag: &str) -> Self {
+        match tag {
+            EDITOR_SPLIT_DIRECTION_DOWN => Self::Down,
+            _ => Self::Right,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EditorTabViewState {
+    mode: EditorViewMode,
+    split_ratio: f32,
+    split_direction: EditorSplitDirection,
+    split_saved_mode: EditorViewMode,
+}
+
+impl EditorTabViewState {
+    fn sanitize(mut self) -> Self {
+        if self.mode == EditorViewMode::Split {
+            self.mode = EditorViewMode::Edit;
+        }
+        self.split_ratio = self
+            .split_ratio
+            .clamp(EDITOR_SPLIT_MIN_RATIO, EDITOR_SPLIT_MAX_RATIO);
+        if self.split_saved_mode == EditorViewMode::Split {
+            self.split_saved_mode = EditorViewMode::Edit;
+        }
+        self
+    }
+}
+
+#[derive(Clone, Debug)]
+struct EditorGroup {
+    id: u64,
+    note_path: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -251,8 +322,19 @@ struct DraggedNote {
 }
 
 #[derive(Clone, Debug)]
+struct DraggedEditorTab {
+    path: String,
+}
+
+#[derive(Clone, Debug)]
 struct DragOver {
     folder: String,
+    target_path: String,
+    insert_after: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TabDragOver {
     target_path: String,
     insert_after: bool,
 }
@@ -362,6 +444,7 @@ enum SidebarState {
 enum PaletteMode {
     Commands,
     QuickOpen,
+    Search,
 }
 
 struct PaletteCommandSpec {
@@ -374,17 +457,35 @@ enum SearchRow {
     File {
         path: String,
         match_count: usize,
+        path_highlights: Vec<Range<usize>>,
     },
     Match {
         path: String,
         line: usize,
         preview: String,
+        preview_highlights: Vec<Range<usize>>,
     },
 }
 
 #[derive(Clone, Debug)]
 struct OpenPathMatch {
     path: String,
+    path_highlights: Vec<Range<usize>>,
+}
+
+#[derive(Clone, Debug)]
+struct SearchMatchEntry {
+    line: usize,
+    preview: String,
+    preview_highlights: Vec<Range<usize>>,
+}
+
+#[derive(Clone, Debug)]
+struct SearchResultGroup {
+    path: String,
+    match_count: usize,
+    path_highlights: Vec<Range<usize>>,
+    matches: Vec<SearchMatchEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -633,6 +734,13 @@ struct XnoteWindow {
     pending_order_nonce_by_folder: HashMap<String, u64>,
     open_editors: Vec<String>,
     open_note_path: Option<String>,
+    editor_groups: Vec<EditorGroup>,
+    active_editor_group_id: u64,
+    next_editor_group_id: u64,
+    editor_group_mru: VecDeque<u64>,
+    editor_group_note_history: HashMap<u64, VecDeque<String>>,
+    pinned_editors: HashSet<String>,
+    tab_drag_over: Option<TabDragOver>,
     open_note_loading: bool,
     open_note_dirty: bool,
     open_note_content: String,
@@ -671,11 +779,17 @@ struct XnoteWindow {
     workspace_width: Pixels,
     workspace_saved_width: Pixels,
     splitter_drag: Option<SplitterDrag>,
+    editor_tab_view_state: HashMap<String, EditorTabViewState>,
     palette_open: bool,
     palette_mode: PaletteMode,
     palette_query: String,
     palette_selected: usize,
     palette_results: Vec<OpenPathMatch>,
+    palette_search_groups: Vec<SearchResultGroup>,
+    palette_search_results: Vec<SearchRow>,
+    palette_search_collapsed_paths: HashSet<String>,
+    recent_palette_quick_open_queries: VecDeque<String>,
+    recent_palette_search_queries: VecDeque<String>,
     next_palette_nonce: u64,
     pending_palette_nonce: u64,
     palette_backdrop_armed_until: Option<Instant>,
@@ -686,7 +800,11 @@ struct XnoteWindow {
     vault_prompt_backdrop_armed_until: Option<Instant>,
     search_query: String,
     search_selected: usize,
+    search_groups: Vec<SearchResultGroup>,
     search_results: Vec<SearchRow>,
+    search_collapsed_paths: HashSet<String>,
+    recent_panel_search_queries: VecDeque<String>,
+    recent_explorer_filter_queries: VecDeque<String>,
     next_search_nonce: u64,
     pending_search_nonce: u64,
     settings_section: SettingsSection,
@@ -697,6 +815,9 @@ struct XnoteWindow {
     settings_language_menu_open: bool,
     settings_backdrop_armed_until: Option<Instant>,
     editor_view_mode: EditorViewMode,
+    editor_split_ratio: f32,
+    editor_split_direction: EditorSplitDirection,
+    editor_split_saved_mode: EditorViewMode,
     open_note_word_count: usize,
     open_note_heading_count: usize,
     open_note_link_count: usize,
@@ -716,7 +837,11 @@ struct XnoteWindow {
     watch_scan_entries: usize,
     watch_inbox: Option<Receiver<WatchInboxMessage>>,
     index_generation: u64,
-    search_query_cache: HashMap<String, Vec<SearchRow>>,
+    note_content_cache: HashMap<String, String>,
+    note_content_cache_order: VecDeque<String>,
+    pending_group_preview_loads: HashSet<String>,
+    pending_external_note_reload: Option<String>,
+    search_query_cache: HashMap<String, Vec<SearchResultGroup>>,
     search_query_cache_order: VecDeque<String>,
     quick_open_query_cache: HashMap<String, Vec<OpenPathMatch>>,
     quick_open_query_cache_order: VecDeque<String>,
@@ -726,6 +851,8 @@ struct XnoteWindow {
     editor_autosave_delay_input: String,
     hotkey_editing_command: Option<CommandId>,
     hotkey_editing_value: String,
+    next_window_layout_persist_nonce: u64,
+    pending_window_layout_persist_nonce: u64,
 }
 
 struct BootContext {
@@ -798,6 +925,16 @@ impl XnoteWindow {
             pending_order_nonce_by_folder: HashMap::new(),
             open_editors: Vec::new(),
             open_note_path: None,
+            editor_groups: vec![EditorGroup {
+                id: 1,
+                note_path: None,
+            }],
+            active_editor_group_id: 1,
+            next_editor_group_id: 2,
+            editor_group_mru: VecDeque::from([1]),
+            editor_group_note_history: HashMap::new(),
+            pinned_editors: HashSet::new(),
+            tab_drag_over: None,
             open_note_loading: false,
             open_note_dirty: false,
             open_note_content: String::new(),
@@ -836,11 +973,17 @@ impl XnoteWindow {
             workspace_width: px(260.),
             workspace_saved_width: px(260.),
             splitter_drag: None,
+            editor_tab_view_state: HashMap::new(),
             palette_open: false,
             palette_mode: PaletteMode::Commands,
             palette_query: String::new(),
             palette_selected: 0,
             palette_results: Vec::new(),
+            palette_search_groups: Vec::new(),
+            palette_search_results: Vec::new(),
+            palette_search_collapsed_paths: HashSet::new(),
+            recent_palette_quick_open_queries: VecDeque::new(),
+            recent_palette_search_queries: VecDeque::new(),
             next_palette_nonce: 0,
             pending_palette_nonce: 0,
             palette_backdrop_armed_until: None,
@@ -851,7 +994,11 @@ impl XnoteWindow {
             vault_prompt_backdrop_armed_until: None,
             search_query: String::new(),
             search_selected: 0,
+            search_groups: Vec::new(),
             search_results: Vec::new(),
+            search_collapsed_paths: HashSet::new(),
+            recent_panel_search_queries: VecDeque::new(),
+            recent_explorer_filter_queries: VecDeque::new(),
             next_search_nonce: 0,
             pending_search_nonce: 0,
             settings_section: SettingsSection::Appearance,
@@ -862,6 +1009,9 @@ impl XnoteWindow {
             settings_language_menu_open: false,
             settings_backdrop_armed_until: None,
             editor_view_mode: EditorViewMode::Edit,
+            editor_split_ratio: 0.5,
+            editor_split_direction: EditorSplitDirection::Right,
+            editor_split_saved_mode: EditorViewMode::Edit,
             open_note_word_count: 0,
             open_note_heading_count: 0,
             open_note_link_count: 0,
@@ -887,6 +1037,10 @@ impl XnoteWindow {
             watch_scan_entries: 0,
             watch_inbox: None,
             index_generation: 0,
+            note_content_cache: HashMap::new(),
+            note_content_cache_order: VecDeque::new(),
+            pending_group_preview_loads: HashSet::new(),
+            pending_external_note_reload: None,
             search_query_cache: HashMap::new(),
             search_query_cache_order: VecDeque::new(),
             quick_open_query_cache: HashMap::new(),
@@ -897,7 +1051,11 @@ impl XnoteWindow {
             editor_autosave_delay_input,
             hotkey_editing_command: None,
             hotkey_editing_value: String::new(),
+            next_window_layout_persist_nonce: 0,
+            pending_window_layout_persist_nonce: 0,
         };
+
+        this.apply_persisted_split_layout();
 
         this.status = SharedString::from(this.i18n.text("status.ready"));
 
@@ -940,6 +1098,19 @@ impl XnoteWindow {
         self.pending_order_nonce_by_folder.clear();
         self.open_editors.clear();
         self.open_note_path = None;
+        self.editor_groups.clear();
+        self.editor_groups.push(EditorGroup {
+            id: 1,
+            note_path: None,
+        });
+        self.active_editor_group_id = 1;
+        self.next_editor_group_id = 2;
+        self.editor_group_mru.clear();
+        self.editor_group_mru.push_back(1);
+        self.editor_group_note_history.clear();
+        self.pinned_editors.clear();
+        self.tab_drag_over = None;
+        self.editor_tab_view_state.clear();
         self.open_note_loading = false;
         self.open_note_dirty = false;
         self.open_note_content.clear();
@@ -958,11 +1129,16 @@ impl XnoteWindow {
         self.palette_query.clear();
         self.palette_selected = 0;
         self.palette_results.clear();
+        self.palette_search_groups.clear();
+        self.palette_search_collapsed_paths.clear();
+        self.refresh_palette_search_rows_from_groups();
         self.pending_palette_nonce = 0;
         self.palette_backdrop_armed_until = None;
         self.search_query.clear();
         self.search_selected = 0;
-        self.search_results.clear();
+        self.search_groups.clear();
+        self.search_collapsed_paths.clear();
+        self.refresh_search_rows_from_groups();
         self.pending_search_nonce = 0;
         self.knowledge_index = None;
         self.watcher_status = WatcherStatus {
@@ -973,11 +1149,16 @@ impl XnoteWindow {
         self.watch_scan_entries = 0;
         self.watch_inbox = None;
         self.bump_index_generation();
+        self.note_content_cache.clear();
+        self.note_content_cache_order.clear();
+        self.pending_group_preview_loads.clear();
+        self.pending_external_note_reload = None;
         self.settings_section = SettingsSection::Appearance;
         self.settings_open = false;
         self.settings_language_menu_open = false;
         self.settings_backdrop_armed_until = None;
         self.editor_view_mode = EditorViewMode::Edit;
+        self.editor_split_saved_mode = EditorViewMode::Edit;
         self.open_note_word_count = 0;
         self.open_note_heading_count = 0;
         self.open_note_link_count = 0;
@@ -1044,7 +1225,7 @@ impl XnoteWindow {
                         this.start_event_watcher();
                         this.explorer_expanded_folders.clear();
                         this.explorer_expanded_folders.insert(String::new());
-                        this.rebuild_explorer_rows();
+                        this.rebuild_explorer_rows(cx);
                         this.status = SharedString::from("Explorer ready, building index...");
                         this.activate_plugins(PluginActivationEvent::OnVaultOpened);
                         this.rebuild_knowledge_index_async(scan_entries, cx);
@@ -1110,30 +1291,33 @@ impl XnoteWindow {
                         .await;
 
                     this.update(&mut cx, |this, cx| match result {
-                    Ok((knowledge_index, duration_ms)) => {
-                        if this.index_generation != generation {
-                            return;
-                        }
+                        Ok((knowledge_index, duration_ms)) => {
+                            if this.index_generation != generation {
+                                return;
+                            }
 
                             this.index_state = IndexState::Ready {
                                 note_count: knowledge_index.note_count(),
                                 duration_ms,
                             };
-                        this.knowledge_index = Some(Arc::new(knowledge_index));
-                        this.status = SharedString::from("Ready");
+                            this.knowledge_index = Some(Arc::new(knowledge_index));
+                            this.status = SharedString::from("Ready");
 
-                        if !this.pending_watch_changes_until_index_ready.is_empty() {
-                            let pending = std::mem::take(
-                                &mut this.pending_watch_changes_until_index_ready,
-                            );
-                            this.apply_watch_changes(pending, cx);
-                        }
+                            if !this.pending_watch_changes_until_index_ready.is_empty() {
+                                let pending = std::mem::take(
+                                    &mut this.pending_watch_changes_until_index_ready,
+                                );
+                                this.apply_watch_changes(pending, cx);
+                            }
 
-                        if !this.search_query.trim().is_empty() {
-                            this.schedule_apply_search(Duration::ZERO, cx);
-                        }
+                            if !this.search_query.trim().is_empty() {
+                                this.schedule_apply_search(Duration::ZERO, cx);
+                            }
                             if this.palette_open
-                                && this.palette_mode == PaletteMode::QuickOpen
+                                && matches!(
+                                    this.palette_mode,
+                                    PaletteMode::QuickOpen | PaletteMode::Search
+                                )
                                 && !this.palette_query.trim().is_empty()
                             {
                                 this.schedule_apply_palette_results(Duration::ZERO, cx);
@@ -1243,12 +1427,7 @@ impl XnoteWindow {
                                 let index = build_explorer_index(&vault, &scan)?;
                                 let duration_ms = started_at.elapsed().as_millis();
                                 let note_count = scan.notes.len();
-                                Ok::<_, anyhow::Error>((
-                                    index,
-                                    scan.notes,
-                                    note_count,
-                                    duration_ms,
-                                ))
+                                Ok::<_, anyhow::Error>((index, scan.notes, note_count, duration_ms))
                             }
                         })
                         .await;
@@ -1273,7 +1452,7 @@ impl XnoteWindow {
                                 this.watcher_status.revision.wrapping_add(1);
                             this.watcher_status.last_error = None;
                             this.start_event_watcher();
-                            this.rebuild_explorer_rows();
+                            this.rebuild_explorer_rows(cx);
                             if this.is_filtering() {
                                 this.schedule_apply_filter(Duration::ZERO, cx);
                             }
@@ -1452,6 +1631,16 @@ impl XnoteWindow {
         }
 
         self.open_editors.remove(ix);
+        self.pinned_editors.remove(path);
+        self.editor_tab_view_state.remove(path);
+        for history in self.editor_group_note_history.values_mut() {
+            history.retain(|existing| existing != path);
+        }
+        for group in &mut self.editor_groups {
+            if group.note_path.as_deref() == Some(path) {
+                group.note_path = None;
+            }
+        }
         if self.selected_note.as_deref() == Some(path) {
             self.selected_note = None;
         }
@@ -1490,9 +1679,198 @@ impl XnoteWindow {
                 self.status = SharedString::from("Ready");
                 cx.notify();
             }
+            self.sync_active_group_note_path();
         } else {
             cx.notify();
         }
+    }
+
+    fn reorder_open_editors_with_pins(&mut self) {
+        let mut pinned = Vec::new();
+        let mut normal = Vec::new();
+        for path in &self.open_editors {
+            if self.pinned_editors.contains(path) {
+                pinned.push(path.clone());
+            } else {
+                normal.push(path.clone());
+            }
+        }
+        pinned.extend(normal);
+        self.open_editors = pinned;
+    }
+
+    fn toggle_pin_editor(&mut self, path: &str, cx: &mut Context<Self>) {
+        if self.pinned_editors.contains(path) {
+            self.pinned_editors.remove(path);
+            self.status = SharedString::from("Tab unpinned");
+        } else {
+            self.pinned_editors.insert(path.to_string());
+            self.status = SharedString::from("Tab pinned");
+        }
+        self.reorder_open_editors_with_pins();
+        cx.notify();
+    }
+
+    fn set_tab_drag_over(
+        &mut self,
+        target_path: String,
+        insert_after: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let should_update = self.tab_drag_over.as_ref().is_none_or(|current| {
+            current.target_path != target_path || current.insert_after != insert_after
+        });
+        if should_update {
+            self.tab_drag_over = Some(TabDragOver {
+                target_path,
+                insert_after,
+            });
+            cx.notify();
+        }
+    }
+
+    fn clear_tab_drag_over(&mut self, cx: &mut Context<Self>) {
+        if self.tab_drag_over.is_some() {
+            self.tab_drag_over = None;
+            cx.notify();
+        }
+    }
+
+    fn reorder_editor_tab(&mut self, dragged_path: &str, target_path: &str, insert_after: bool) {
+        let Some(from_ix) = self
+            .open_editors
+            .iter()
+            .position(|path| path == dragged_path)
+        else {
+            return;
+        };
+        let Some(target_ix) = self
+            .open_editors
+            .iter()
+            .position(|path| path == target_path)
+        else {
+            return;
+        };
+        if dragged_path == target_path {
+            return;
+        }
+
+        let dragged = self.open_editors.remove(from_ix);
+        let mut insert_ix = target_ix;
+        if from_ix < target_ix {
+            insert_ix = insert_ix.saturating_sub(1);
+        }
+        if insert_after {
+            insert_ix = (insert_ix + 1).min(self.open_editors.len());
+        }
+        self.open_editors.insert(insert_ix, dragged);
+        self.reorder_open_editors_with_pins();
+    }
+
+    fn handle_tab_drop(
+        &mut self,
+        dragged: &DraggedEditorTab,
+        target_path: &str,
+        target_group_id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let drop_meta = self.tab_drag_over.clone();
+        self.clear_tab_drag_over(cx);
+
+        if let Some(meta) = &drop_meta {
+            if meta.target_path != target_path {
+                return;
+            }
+        }
+
+        let insert_after = drop_meta
+            .as_ref()
+            .map(|meta| meta.insert_after)
+            .unwrap_or(false);
+
+        let current_group = self.group_id_for_note_path(&dragged.path);
+        if current_group == Some(target_group_id) {
+            self.reorder_editor_tab(&dragged.path, target_path, insert_after);
+            self.status = SharedString::from("Tab reordered");
+            cx.notify();
+            return;
+        }
+
+        self.move_note_to_group(dragged.path.clone(), target_group_id, cx);
+    }
+
+    fn move_note_to_group(
+        &mut self,
+        note_path: String,
+        target_group_id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .editor_groups
+            .iter()
+            .all(|group| group.id != target_group_id)
+        {
+            return;
+        }
+
+        if !self.open_editors.iter().any(|path| path == &note_path) {
+            self.open_editors.push(note_path.clone());
+        }
+
+        for group in &mut self.editor_groups {
+            if group.id != target_group_id && group.note_path.as_deref() == Some(note_path.as_str())
+            {
+                group.note_path = None;
+            }
+        }
+
+        if let Some(group) = self
+            .editor_groups
+            .iter_mut()
+            .find(|group| group.id == target_group_id)
+        {
+            group.note_path = Some(note_path.clone());
+        }
+
+        self.active_editor_group_id = target_group_id;
+        self.touch_group_mru(target_group_id);
+        self.open_note(note_path, cx);
+    }
+
+    fn group_id_for_note_path(&self, note_path: &str) -> Option<u64> {
+        self.editor_groups
+            .iter()
+            .find(|group| group.note_path.as_deref() == Some(note_path))
+            .map(|group| group.id)
+    }
+
+    fn move_current_editor_to_next_group(&mut self, cx: &mut Context<Self>) {
+        let Some(note_path) = self.open_note_path.clone() else {
+            return;
+        };
+
+        self.ensure_active_group_exists();
+        let Some(active_ix) = self.active_group_index() else {
+            return;
+        };
+
+        let target_group_id = if active_ix + 1 < self.editor_groups.len() {
+            self.editor_groups[active_ix + 1].id
+        } else {
+            let new_id = self.next_editor_group_id.max(1);
+            self.next_editor_group_id = new_id.saturating_add(1);
+            self.editor_groups.insert(
+                active_ix + 1,
+                EditorGroup {
+                    id: new_id,
+                    note_path: None,
+                },
+            );
+            new_id
+        };
+
+        self.move_note_to_group(note_path, target_group_id, cx);
+        self.status = SharedString::from("Moved editor to next group");
     }
 
     fn open_palette(&mut self, mode: PaletteMode, cx: &mut Context<Self>) {
@@ -1501,6 +1879,9 @@ impl XnoteWindow {
         self.palette_query.clear();
         self.palette_selected = 0;
         self.palette_results.clear();
+        self.palette_search_groups.clear();
+        self.palette_search_collapsed_paths.clear();
+        self.refresh_palette_search_rows_from_groups();
         self.pending_palette_nonce = 0;
         self.palette_backdrop_armed_until = Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
         cx.notify();
@@ -1511,6 +1892,9 @@ impl XnoteWindow {
         self.palette_query.clear();
         self.palette_selected = 0;
         self.palette_results.clear();
+        self.palette_search_groups.clear();
+        self.palette_search_collapsed_paths.clear();
+        self.refresh_palette_search_rows_from_groups();
         self.pending_palette_nonce = 0;
         self.palette_backdrop_armed_until = None;
         cx.notify();
@@ -1544,6 +1928,549 @@ impl XnoteWindow {
         self.vault_prompt_error = None;
         self.vault_prompt_backdrop_armed_until = None;
         cx.notify();
+    }
+
+    fn refresh_search_rows_from_groups(&mut self) {
+        self.search_results =
+            flatten_search_groups(&self.search_groups, &self.search_collapsed_paths);
+        if self.search_results.is_empty() {
+            self.search_selected = 0;
+        } else if self.search_selected >= self.search_results.len() {
+            self.search_selected = 0;
+        }
+    }
+
+    fn refresh_palette_search_rows_from_groups(&mut self) {
+        self.palette_search_results = flatten_search_groups(
+            &self.palette_search_groups,
+            &self.palette_search_collapsed_paths,
+        );
+        if self.palette_search_results.is_empty() {
+            self.palette_selected = 0;
+        } else if self.palette_selected >= self.palette_search_results.len() {
+            self.palette_selected = 0;
+        }
+    }
+
+    fn toggle_search_group_collapsed(&mut self, path: &str) {
+        if !self.search_groups.iter().any(|group| group.path == path) {
+            return;
+        }
+        if !self.search_collapsed_paths.remove(path) {
+            self.search_collapsed_paths.insert(path.to_string());
+        }
+        self.refresh_search_rows_from_groups();
+        self.search_selected = self
+            .search_results
+            .iter()
+            .position(
+                |row| matches!(row, SearchRow::File { path: row_path, .. } if row_path == path),
+            )
+            .unwrap_or(0);
+    }
+
+    fn toggle_palette_search_group_collapsed(&mut self, path: &str) {
+        if !self
+            .palette_search_groups
+            .iter()
+            .any(|group| group.path == path)
+        {
+            return;
+        }
+        if !self.palette_search_collapsed_paths.remove(path) {
+            self.palette_search_collapsed_paths.insert(path.to_string());
+        }
+        self.refresh_palette_search_rows_from_groups();
+        self.palette_selected = self
+            .palette_search_results
+            .iter()
+            .position(
+                |row| matches!(row, SearchRow::File { path: row_path, .. } if row_path == path),
+            )
+            .unwrap_or(0);
+    }
+
+    fn focus_next_editor_group(&mut self, cx: &mut Context<Self>) {
+        self.ensure_active_group_exists();
+        let len = self.editor_groups.len();
+        if len <= 1 {
+            return;
+        }
+        let ix = self.active_group_index().unwrap_or(0);
+        let next_ix = (ix + 1) % len;
+        let group_id = self.editor_groups[next_ix].id;
+        self.set_active_editor_group(group_id, cx);
+    }
+
+    fn touch_group_mru(&mut self, group_id: u64) {
+        if let Some(pos) = self.editor_group_mru.iter().position(|id| *id == group_id) {
+            self.editor_group_mru.remove(pos);
+        }
+        self.editor_group_mru.push_back(group_id);
+        while self.editor_group_mru.len() > EDITOR_GROUP_MRU_CAPACITY {
+            self.editor_group_mru.pop_front();
+        }
+    }
+
+    fn prune_group_mru(&mut self) {
+        let valid = self
+            .editor_groups
+            .iter()
+            .map(|group| group.id)
+            .collect::<HashSet<_>>();
+        self.editor_group_mru.retain(|id| valid.contains(id));
+        if self.editor_group_mru.is_empty() {
+            self.touch_group_mru(self.active_editor_group_id);
+        }
+    }
+
+    fn record_group_note_history(&mut self, group_id: u64, note_path: &str) {
+        let history = self.editor_group_note_history.entry(group_id).or_default();
+        history.retain(|existing| existing != note_path);
+        history.push_back(note_path.to_string());
+        while history.len() > EDITOR_GROUP_MRU_CAPACITY {
+            history.pop_front();
+        }
+    }
+
+    fn swap_group_note_history(&mut self, group_id: u64, cx: &mut Context<Self>) {
+        let Some(current_path) = self.open_note_path.clone() else {
+            return;
+        };
+
+        let Some(history) = self.editor_group_note_history.get_mut(&group_id) else {
+            return;
+        };
+
+        let Some(target_ix) = history.iter().rposition(|path| path != &current_path) else {
+            return;
+        };
+
+        let target = history[target_ix].clone();
+        if !self.open_editors.iter().any(|path| path == &target) {
+            return;
+        }
+
+        history.retain(|path| path != &target);
+        history.push_back(current_path);
+        history.push_back(target.clone());
+        while history.len() > EDITOR_GROUP_MRU_CAPACITY {
+            history.pop_front();
+        }
+
+        self.open_note(target, cx);
+    }
+
+    fn focus_previous_editor_group(&mut self, cx: &mut Context<Self>) {
+        self.ensure_active_group_exists();
+        let len = self.editor_groups.len();
+        if len <= 1 {
+            return;
+        }
+        let ix = self.active_group_index().unwrap_or(0);
+        let prev_ix = if ix == 0 { len - 1 } else { ix - 1 };
+        let group_id = self.editor_groups[prev_ix].id;
+        self.set_active_editor_group(group_id, cx);
+    }
+
+    fn focus_last_editor_group(&mut self, cx: &mut Context<Self>) {
+        self.ensure_active_group_exists();
+        if self.editor_groups.len() <= 1 {
+            return;
+        }
+        self.prune_group_mru();
+        let active = self.active_editor_group_id;
+        if let Some(target) = self
+            .editor_group_mru
+            .iter()
+            .rev()
+            .find(|id| **id != active)
+            .copied()
+        {
+            self.set_active_editor_group(target, cx);
+        }
+    }
+
+    fn split_active_group_to_new_note(&mut self, cx: &mut Context<Self>) {
+        self.split_active_editor_group(cx);
+        self.create_new_note(cx);
+    }
+
+    fn close_other_editor_groups(&mut self, cx: &mut Context<Self>) {
+        self.ensure_active_group_exists();
+        let active = self.active_editor_group_id;
+        if self.editor_groups.len() <= 1 {
+            return;
+        }
+
+        let active_note = self
+            .editor_groups
+            .iter()
+            .find(|group| group.id == active)
+            .and_then(|group| group.note_path.clone());
+
+        self.editor_groups.retain(|group| group.id == active);
+        self.prune_group_mru();
+        self.active_editor_group_id = active;
+        self.touch_group_mru(active);
+        self.open_note_path = active_note.clone();
+        self.selected_note = active_note.clone();
+
+        if let Some(path) = active_note {
+            self.restore_tab_view_state_or_default(&path);
+        }
+
+        self.status = SharedString::from("Other editor groups closed");
+        cx.notify();
+    }
+
+    fn close_groups_to_right(&mut self, cx: &mut Context<Self>) {
+        self.ensure_active_group_exists();
+        let Some(active_ix) = self.active_group_index() else {
+            return;
+        };
+        if active_ix + 1 >= self.editor_groups.len() {
+            return;
+        }
+
+        self.editor_groups.truncate(active_ix + 1);
+        self.prune_group_mru();
+        let active = self.active_editor_group_id;
+        self.touch_group_mru(active);
+        let active_note = self
+            .editor_groups
+            .iter()
+            .find(|group| group.id == active)
+            .and_then(|group| group.note_path.clone());
+        self.open_note_path = active_note.clone();
+        self.selected_note = active_note.clone();
+
+        if let Some(path) = active_note {
+            self.restore_tab_view_state_or_default(&path);
+        }
+
+        self.status = SharedString::from("Editor groups to the right closed");
+        cx.notify();
+    }
+
+    fn reopen_external_current_note(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.pending_external_note_reload.take() else {
+            return;
+        };
+        if self.open_note_path.as_deref() != Some(path.as_str()) {
+            return;
+        }
+        self.open_note(path, cx);
+    }
+
+    fn cache_note_content(&mut self, path: &str, content: String) {
+        self.note_content_cache.insert(path.to_string(), content);
+        if let Some(evicted) = touch_cache_order(
+            path,
+            &mut self.note_content_cache_order,
+            NOTE_CONTENT_CACHE_CAPACITY,
+        ) {
+            self.note_content_cache.remove(&evicted);
+        }
+    }
+
+    fn cached_note_content(&mut self, path: &str) -> Option<String> {
+        let content = self.note_content_cache.get(path).cloned();
+        if content.is_some() {
+            let _ = touch_cache_order(
+                path,
+                &mut self.note_content_cache_order,
+                NOTE_CONTENT_CACHE_CAPACITY,
+            );
+        }
+        content
+    }
+
+    fn evict_note_content_cache_path(&mut self, path: &str) {
+        self.note_content_cache.remove(path);
+        self.pending_group_preview_loads.remove(path);
+        if let Some(pos) = self
+            .note_content_cache_order
+            .iter()
+            .position(|existing| existing == path)
+        {
+            self.note_content_cache_order.remove(pos);
+        }
+    }
+
+    fn move_note_content_cache_path(&mut self, from: &str, to: &str) {
+        if from == to {
+            return;
+        }
+
+        if let Some(content) = self.note_content_cache.remove(from) {
+            self.note_content_cache.insert(to.to_string(), content);
+        }
+
+        if let Some(pos) = self
+            .note_content_cache_order
+            .iter()
+            .position(|existing| existing == from)
+        {
+            self.note_content_cache_order.remove(pos);
+        }
+
+        if self.note_content_cache.contains_key(to) {
+            let _ = touch_cache_order(
+                to,
+                &mut self.note_content_cache_order,
+                NOTE_CONTENT_CACHE_CAPACITY,
+            );
+        }
+
+        if self.pending_group_preview_loads.remove(from) {
+            self.pending_group_preview_loads.insert(to.to_string());
+        }
+    }
+
+    fn schedule_group_preview_load_if_needed(&mut self, note_path: &str, cx: &mut Context<Self>) {
+        if self.note_content_cache.contains_key(note_path)
+            || self.pending_group_preview_loads.contains(note_path)
+        {
+            return;
+        }
+        let Some(vault) = self.vault() else {
+            return;
+        };
+
+        let path = note_path.to_string();
+        self.pending_group_preview_loads.insert(path.clone());
+
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                let vault = vault.clone();
+                let path = path.clone();
+                async move {
+                    let read_result: anyhow::Result<String> = cx
+                        .background_executor()
+                        .spawn({
+                            let vault = vault.clone();
+                            let path = path.clone();
+                            async move { vault.read_note(&path) }
+                        })
+                        .await;
+
+                    this.update(&mut cx, |this, cx| {
+                        this.pending_group_preview_loads.remove(&path);
+                        if let Ok(content) = read_result {
+                            this.cache_note_content(&path, content);
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }
+            },
+        )
+        .detach();
+    }
+
+    fn schedule_non_active_group_preview_loads(&mut self, cx: &mut Context<Self>) {
+        let active_group = self.active_editor_group_id;
+        let paths = self
+            .editor_groups
+            .iter()
+            .filter(|group| group.id != active_group)
+            .filter_map(|group| group.note_path.clone())
+            .filter(|path| {
+                !self.note_content_cache.contains_key(path)
+                    && !self.pending_group_preview_loads.contains(path)
+            })
+            .collect::<Vec<_>>();
+
+        for path in paths {
+            self.schedule_group_preview_load_if_needed(&path, cx);
+        }
+    }
+
+    fn apply_loaded_note_content(
+        &mut self,
+        note_path: &str,
+        content: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.cache_note_content(note_path, content.clone());
+        self.open_note_content = content;
+        self.editor_buffer = Some(EditorBuffer::new(&self.open_note_content));
+        self.open_note_word_count = count_words(&self.open_note_content);
+        self.pending_markdown_invalidation = Some(MarkdownInvalidationWindow::new(
+            0,
+            self.open_note_content.len(),
+        ));
+        self.schedule_markdown_parse(Duration::ZERO, cx);
+
+        if let Some((pending_path, pending_line)) = self.pending_open_note_cursor.take() {
+            if pending_path == note_path {
+                let offset = byte_offset_for_line(&self.open_note_content, pending_line);
+                self.editor_selected_range = offset..offset;
+                self.editor_selection_reversed = false;
+                self.editor_preferred_x = None;
+            } else {
+                self.pending_open_note_cursor = Some((pending_path, pending_line));
+            }
+        }
+    }
+
+    fn ensure_active_group_exists(&mut self) {
+        if self
+            .editor_groups
+            .iter()
+            .any(|group| group.id == self.active_editor_group_id)
+        {
+            return;
+        }
+
+        if let Some(first) = self.editor_groups.first() {
+            self.active_editor_group_id = first.id;
+        } else {
+            let id = self.next_editor_group_id.max(1);
+            self.next_editor_group_id = id.saturating_add(1);
+            self.editor_groups.push(EditorGroup {
+                id,
+                note_path: None,
+            });
+            self.active_editor_group_id = id;
+        }
+    }
+
+    fn active_group_index(&self) -> Option<usize> {
+        self.editor_groups
+            .iter()
+            .position(|group| group.id == self.active_editor_group_id)
+    }
+
+    fn set_active_editor_group(&mut self, group_id: u64, cx: &mut Context<Self>) {
+        if self.editor_groups.iter().all(|group| group.id != group_id) {
+            return;
+        }
+
+        if self.active_editor_group_id == group_id {
+            return;
+        }
+
+        self.active_editor_group_id = group_id;
+        self.touch_group_mru(group_id);
+        if let Some(group) = self.editor_groups.iter().find(|group| group.id == group_id) {
+            let target = group.note_path.clone();
+            self.selected_note = target.clone();
+
+            if let Some(path) = target {
+                if self.open_note_path.as_deref() != Some(path.as_str()) || self.open_note_loading {
+                    self.open_note(path, cx);
+                    return;
+                }
+                self.open_note_path = Some(path.clone());
+                self.restore_tab_view_state_or_default(&path);
+            } else {
+                self.open_note_path = None;
+                self.open_note_loading = false;
+                self.open_note_dirty = false;
+                self.open_note_content.clear();
+                self.editor_buffer = None;
+                self.editor_selected_range = 0..0;
+                self.editor_selection_reversed = false;
+                self.editor_marked_range = None;
+                self.editor_is_selecting = false;
+                self.editor_preferred_x = None;
+                self.editor_layout = None;
+                self.editor_view_mode = EditorViewMode::Edit;
+            }
+        }
+        cx.notify();
+    }
+
+    fn sync_active_group_note_path(&mut self) {
+        if let Some(ix) = self.active_group_index() {
+            self.editor_groups[ix].note_path = self.open_note_path.clone();
+        }
+    }
+
+    fn split_active_editor_group(&mut self, cx: &mut Context<Self>) {
+        self.ensure_active_group_exists();
+        let source_ix = self.active_group_index().unwrap_or(0);
+        let source_note = self
+            .editor_groups
+            .get(source_ix)
+            .and_then(|group| group.note_path.clone());
+        let new_id = self.next_editor_group_id;
+        self.next_editor_group_id = self.next_editor_group_id.wrapping_add(1).max(1);
+
+        self.editor_groups.insert(
+            source_ix + 1,
+            EditorGroup {
+                id: new_id,
+                note_path: source_note,
+            },
+        );
+        self.active_editor_group_id = new_id;
+        self.touch_group_mru(new_id);
+        self.open_note_path = self
+            .editor_groups
+            .get(source_ix + 1)
+            .and_then(|group| group.note_path.clone());
+        self.selected_note = self.open_note_path.clone();
+        if let Some(path) = self.open_note_path.clone() {
+            self.restore_tab_view_state_or_default(&path);
+        }
+        cx.notify();
+    }
+
+    fn close_editor_group(&mut self, group_id: u64, cx: &mut Context<Self>) {
+        if self.editor_groups.len() <= 1 {
+            return;
+        }
+
+        let Some(ix) = self
+            .editor_groups
+            .iter()
+            .position(|group| group.id == group_id)
+        else {
+            return;
+        };
+
+        self.editor_groups.remove(ix);
+        self.prune_group_mru();
+        self.ensure_active_group_exists();
+        if self.active_editor_group_id == group_id {
+            let fallback_ix = ix
+                .saturating_sub(1)
+                .min(self.editor_groups.len().saturating_sub(1));
+            let fallback_id = self.editor_groups[fallback_ix].id;
+            self.active_editor_group_id = fallback_id;
+            self.touch_group_mru(fallback_id);
+        }
+
+        if let Some(group) = self
+            .editor_groups
+            .iter()
+            .find(|group| group.id == self.active_editor_group_id)
+        {
+            self.open_note_path = group.note_path.clone();
+            self.selected_note = group.note_path.clone();
+            if let Some(path) = self.open_note_path.clone() {
+                self.restore_tab_view_state_or_default(&path);
+            }
+        }
+
+        cx.notify();
+    }
+
+    fn push_recent_query(recent: &mut VecDeque<String>, raw_query: &str) {
+        let query = raw_query.trim();
+        if query.is_empty() {
+            return;
+        }
+
+        recent.retain(|existing| !existing.eq_ignore_ascii_case(query));
+        recent.push_front(query.to_string());
+        while recent.len() > RECENT_QUERY_HISTORY_CAPACITY {
+            recent.pop_back();
+        }
     }
 
     fn command_spec_by_id(
@@ -1642,6 +2569,147 @@ impl XnoteWindow {
                 let _ = save_project_settings(project_root, &self.app_settings);
             }
         }
+    }
+
+    fn apply_persisted_split_layout(&mut self) {
+        let layout = self.app_settings.window_layout.clone();
+
+        if let Some(width_px) = layout.panel_shell_width_px {
+            let width = px(width_px as f32).max(px(PANEL_SHELL_MIN_WIDTH));
+            self.panel_shell_width = width;
+            self.panel_shell_saved_width = width;
+        }
+
+        if let Some(width_px) = layout.workspace_width_px {
+            let width = px(width_px as f32).max(px(WORKSPACE_MIN_WIDTH));
+            self.workspace_width = width;
+            self.workspace_saved_width = width;
+        }
+
+        if let Some(collapsed) = layout.panel_shell_collapsed {
+            self.panel_shell_collapsed = collapsed;
+            if !collapsed {
+                self.panel_shell_width =
+                    self.panel_shell_saved_width.max(px(PANEL_SHELL_MIN_WIDTH));
+            }
+        }
+
+        if let Some(collapsed) = layout.workspace_collapsed {
+            self.workspace_collapsed = collapsed;
+            if !collapsed {
+                self.workspace_width = self.workspace_saved_width.max(px(WORKSPACE_MIN_WIDTH));
+            }
+        }
+
+        if let Some(ratio_milli) = layout.editor_split_ratio_milli {
+            let ratio = ratio_milli as f32 / EDITOR_SPLIT_RATIO_SCALE;
+            self.editor_split_ratio = ratio.clamp(EDITOR_SPLIT_MIN_RATIO, EDITOR_SPLIT_MAX_RATIO);
+        }
+
+        if let Some(direction) = layout.editor_split_direction.as_deref() {
+            self.editor_split_direction = EditorSplitDirection::from_tag(direction);
+        }
+    }
+
+    fn window_layout_snapshot(&self, window: &Window) -> WindowLayoutSettings {
+        let mut layout = self.app_settings.window_layout.clone();
+        let panel_width = self.panel_shell_saved_width.max(px(PANEL_SHELL_MIN_WIDTH));
+        let workspace_width = self.workspace_saved_width.max(px(WORKSPACE_MIN_WIDTH));
+
+        match window.window_bounds() {
+            WindowBounds::Windowed(bounds) => {
+                layout.window_x_px = Some((f32::from(bounds.origin.x).round()) as i32);
+                layout.window_y_px = Some((f32::from(bounds.origin.y).round()) as i32);
+                layout.window_width_px =
+                    Some((f32::from(bounds.size.width).round() as u32).max(WINDOW_MIN_WIDTH_PX));
+                layout.window_height_px =
+                    Some((f32::from(bounds.size.height).round() as u32).max(WINDOW_MIN_HEIGHT_PX));
+            }
+            WindowBounds::Maximized(bounds) | WindowBounds::Fullscreen(bounds) => {
+                layout.window_width_px =
+                    Some((f32::from(bounds.size.width).round() as u32).max(WINDOW_MIN_WIDTH_PX));
+                layout.window_height_px =
+                    Some((f32::from(bounds.size.height).round() as u32).max(WINDOW_MIN_HEIGHT_PX));
+            }
+        }
+
+        layout.panel_shell_width_px = Some(u32::from(panel_width.round()));
+        layout.workspace_width_px = Some(u32::from(workspace_width.round()));
+        layout.panel_shell_collapsed = Some(self.panel_shell_collapsed);
+        layout.workspace_collapsed = Some(self.workspace_collapsed);
+        layout.editor_split_ratio_milli = Some(
+            (self.editor_split_ratio.clamp(0.0, 1.0) * EDITOR_SPLIT_RATIO_SCALE).round() as u16,
+        );
+        layout.editor_split_direction = Some(self.editor_split_direction.to_tag().to_string());
+
+        layout
+    }
+
+    fn current_tab_view_state(&self) -> EditorTabViewState {
+        EditorTabViewState {
+            mode: self.editor_view_mode,
+            split_ratio: self.editor_split_ratio,
+            split_direction: self.editor_split_direction,
+            split_saved_mode: self.editor_split_saved_mode,
+        }
+        .sanitize()
+    }
+
+    fn remember_current_tab_view_state(&mut self) {
+        if let Some(path) = self.open_note_path.clone() {
+            self.editor_tab_view_state
+                .insert(path, self.current_tab_view_state());
+        }
+    }
+
+    fn restore_tab_view_state_or_default(&mut self, path: &str) {
+        if let Some(saved) = self.editor_tab_view_state.get(path).copied() {
+            let saved = saved.sanitize();
+            self.editor_view_mode = saved.mode;
+            self.editor_split_ratio = saved.split_ratio;
+            self.editor_split_direction = saved.split_direction;
+            self.editor_split_saved_mode = saved.split_saved_mode;
+            return;
+        }
+
+        self.editor_view_mode = EditorViewMode::Edit;
+        self.editor_split_saved_mode = EditorViewMode::Edit;
+        self.editor_split_ratio = self
+            .editor_split_ratio
+            .clamp(EDITOR_SPLIT_MIN_RATIO, EDITOR_SPLIT_MAX_RATIO);
+    }
+
+    fn schedule_window_layout_persist_if_changed(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.window_layout_snapshot(window);
+        if snapshot == self.app_settings.window_layout {
+            return;
+        }
+
+        self.app_settings.window_layout = snapshot;
+        self.next_window_layout_persist_nonce =
+            self.next_window_layout_persist_nonce.wrapping_add(1);
+        let nonce = self.next_window_layout_persist_nonce;
+        self.pending_window_layout_persist_nonce = nonce;
+
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    Timer::after(WINDOW_LAYOUT_PERSIST_DEBOUNCE).await;
+                    this.update(&mut cx, |this, _cx| {
+                        if this.pending_window_layout_persist_nonce == nonce {
+                            this.persist_settings();
+                        }
+                    })
+                    .ok();
+                }
+            },
+        )
+        .detach();
     }
 
     fn autosave_delay(&self) -> Duration {
@@ -1821,7 +2889,11 @@ impl XnoteWindow {
                 cx.notify();
             }
             CommandId::FocusSearch => {
-                self.close_palette(cx);
+                if self.palette_open {
+                    self.open_palette(PaletteMode::Search, cx);
+                } else {
+                    self.close_palette(cx);
+                }
                 self.panel_mode = PanelMode::Search;
                 cx.notify();
             }
@@ -1840,8 +2912,8 @@ impl XnoteWindow {
         let rail_w = px(48.);
         let splitter_w = px(6.);
         let editor_min_w = px(320.);
-        let panel_min_w = px(180.);
-        let workspace_min_w = px(220.);
+        let panel_min_w = px(PANEL_SHELL_MIN_WIDTH);
+        let workspace_min_w = px(WORKSPACE_MIN_WIDTH);
 
         let mut panel_shell_state = if self.panel_shell_collapsed {
             SidebarState::Hidden
@@ -1894,7 +2966,7 @@ impl XnoteWindow {
             }
         } else if self.panel_shell_collapsed {
             self.panel_shell_collapsed = false;
-            self.panel_shell_width = self.panel_shell_saved_width.max(px(180.));
+            self.panel_shell_width = self.panel_shell_saved_width.max(px(PANEL_SHELL_MIN_WIDTH));
             self.panel_shell_tab_toggle_exiting = true;
             self.panel_shell_tab_toggle_anim_nonce =
                 self.panel_shell_tab_toggle_anim_nonce.wrapping_add(1);
@@ -1938,7 +3010,7 @@ impl XnoteWindow {
             }
         } else if self.workspace_collapsed {
             self.workspace_collapsed = false;
-            self.workspace_width = self.workspace_saved_width.max(px(220.));
+            self.workspace_width = self.workspace_saved_width.max(px(WORKSPACE_MIN_WIDTH));
             self.workspace_tab_toggle_exiting = true;
             self.workspace_tab_toggle_anim_nonce =
                 self.workspace_tab_toggle_anim_nonce.wrapping_add(1);
@@ -2003,8 +3075,8 @@ impl XnoteWindow {
         let rail_w = px(48.);
         let splitter_w = px(6.);
         let editor_min_w = px(320.);
-        let panel_min_w = px(180.);
-        let workspace_min_w = px(220.);
+        let panel_min_w = px(PANEL_SHELL_MIN_WIDTH);
+        let workspace_min_w = px(WORKSPACE_MIN_WIDTH);
 
         let window_w = window.bounds().size.width;
         let (panel_shell_state, workspace_state) = self.effective_sidebar_layout(window_w);
@@ -2173,6 +3245,11 @@ impl XnoteWindow {
                 self.i18n.text("palette.placeholder.quick_open"),
                 self.i18n.text("palette.group.files"),
             ),
+            PaletteMode::Search => (
+                self.i18n.text("palette.title.search"),
+                self.i18n.text("palette.placeholder.search"),
+                self.i18n.text("palette.group.search"),
+            ),
         };
 
         let query_empty = self.palette_query.trim().is_empty();
@@ -2190,6 +3267,36 @@ impl XnoteWindow {
         let item_count = match self.palette_mode {
             PaletteMode::Commands => self.filtered_palette_command_indices().len(),
             PaletteMode::QuickOpen => self.palette_results.len(),
+            PaletteMode::Search => self.palette_search_results.len(),
+        };
+        let palette_hint = match self.palette_mode {
+            PaletteMode::Commands => SharedString::from("Esc close · ↑/↓ navigate · Enter run"),
+            PaletteMode::QuickOpen => {
+                if query_empty {
+                    if let Some(recent) = self.recent_palette_quick_open_queries.front() {
+                        SharedString::from(format!(
+                            "Esc close · ↑/↓ navigate · Enter open · Recent: {recent}"
+                        ))
+                    } else {
+                        SharedString::from("Esc close · ↑/↓ navigate · Enter open")
+                    }
+                } else {
+                    SharedString::from("Esc close · ↑/↓ navigate · Enter open")
+                }
+            }
+            PaletteMode::Search => {
+                if query_empty {
+                    if let Some(recent) = self.recent_palette_search_queries.front() {
+                        SharedString::from(format!(
+                            "Esc close · ↑/↓ navigate · Enter open · Recent: {recent}"
+                        ))
+                    } else {
+                        SharedString::from("Esc close · ↑/↓ navigate · Enter open")
+                    }
+                } else {
+                    SharedString::from("Esc close · ↑/↓ navigate · Enter open")
+                }
+            }
         };
 
         let list = uniform_list(
@@ -2337,7 +3444,16 @@ impl XnoteWindow {
                     PaletteMode::QuickOpen => {
                         if this.palette_results.is_empty() {
                             let msg = if this.palette_query.trim().is_empty() {
-                                "Type to search…"
+                                if let Some(recent) = this.recent_palette_quick_open_queries.front()
+                                {
+                                    if recent.is_empty() {
+                                        "Type to search…"
+                                    } else {
+                                        "Type to search… (Ctrl+V to paste)"
+                                    }
+                                } else {
+                                    "Type to search…"
+                                }
                             } else {
                                 "No matches"
                             };
@@ -2369,9 +3485,11 @@ impl XnoteWindow {
                                         .child("");
                                 };
                                 let path = open_match.path.clone();
+                                let path_highlights = open_match.path_highlights.clone();
 
                                 let selected = ix == this.palette_selected;
                                 let open_path = path.clone();
+                                let row_path = path.clone();
 
                                 div()
                                     .id(ElementId::Name(SharedString::from(format!(
@@ -2400,15 +3518,264 @@ impl XnoteWindow {
                                             this.open_note(open_path.clone(), cx);
                                         },
                                     ))
+                                    .tooltip({
+                                        let tooltip_path = row_path.clone();
+                                        let tooltip_theme = ui_theme;
+                                        move |_window, cx| {
+                                            AnyView::from(cx.new(|_| TooltipPreview {
+                                                label: tooltip_path.clone().into(),
+                                                ui_theme: tooltip_theme,
+                                            }))
+                                        }
+                                    })
                                     .child(ui_icon(ICON_FILE_TEXT, 16., ui_theme.text_muted))
                                     .child(
                                         div()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .flex()
+                                            .items_center()
                                             .font_family("IBM Plex Mono")
                                             .text_size(px(11.))
                                             .font_weight(FontWeight(750.))
-                                            .text_color(rgb(ui_theme.text_primary))
-                                            .child(path),
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .children(render_highlighted_segments(
+                                                &path,
+                                                &path_highlights,
+                                                ui_theme.text_primary,
+                                                ui_theme.accent,
+                                                FontWeight(750.),
+                                                FontWeight(900.),
+                                            )),
                                     )
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    PaletteMode::Search => {
+                        if this.palette_search_results.is_empty() {
+                            let msg = if this.palette_query.trim().is_empty() {
+                                "Type keywords to search content…"
+                            } else {
+                                "No search matches"
+                            };
+                            return range
+                                .map(|ix| {
+                                    div()
+                                        .id(ElementId::named_usize("palette.search.empty", ix))
+                                        .h(px(44.))
+                                        .px(px(10.))
+                                        .font_family("Inter")
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(ui_theme.text_muted))
+                                        .child(if ix == 0 { msg } else { "" })
+                                })
+                                .collect::<Vec<_>>();
+                        }
+
+                        range
+                            .map(|ix| {
+                                let Some(row) = this.palette_search_results.get(ix) else {
+                                    return div()
+                                        .id(ElementId::named_usize("palette.search.missing", ix))
+                                        .h(px(44.))
+                                        .px(px(10.))
+                                        .child("");
+                                };
+
+                                let selected = ix == this.palette_selected;
+
+                                match row {
+                                    SearchRow::File {
+                                        path,
+                                        match_count,
+                                        path_highlights,
+                                    } => {
+                                        let row_path = path.clone();
+                                        let toggle_path = path.clone();
+                                        let is_collapsed =
+                                            this.palette_search_collapsed_paths.contains(path);
+                                        let count_label =
+                                            SharedString::from(format!("{match_count}"));
+                                        div()
+                                            .id(ElementId::Name(SharedString::from(format!(
+                                                "palette.search.file:{path}"
+                                            ))))
+                                            .h(px(44.))
+                                            .w_full()
+                                            .px(px(10.))
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .bg(if selected {
+                                                rgb(ui_theme.accent_soft)
+                                            } else {
+                                                rgba(0x00000000)
+                                            })
+                                            .when(!selected, |this| {
+                                                this.hover(|this| {
+                                                    this.bg(rgb(ui_theme.interactive_hover))
+                                                })
+                                            })
+                                            .on_click(cx.listener(
+                                                move |this, _ev: &ClickEvent, _window, cx| {
+                                                    this.palette_selected = ix;
+                                                    this.toggle_palette_search_group_collapsed(
+                                                        &toggle_path,
+                                                    );
+                                                    cx.notify();
+                                                },
+                                            ))
+                                            .tooltip({
+                                                let tooltip_path = row_path.clone();
+                                                let tooltip_theme = ui_theme;
+                                                move |_window, cx| {
+                                                    AnyView::from(cx.new(|_| TooltipPreview {
+                                                        label: tooltip_path.clone().into(),
+                                                        ui_theme: tooltip_theme,
+                                                    }))
+                                                }
+                                            })
+                                            .child(ui_icon(
+                                                ICON_FILE_TEXT,
+                                                16.,
+                                                ui_theme.text_muted,
+                                            ))
+                                            .child(
+                                                div()
+                                                    .h(px(20.))
+                                                    .w(px(20.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(ui_icon(
+                                                        if is_collapsed {
+                                                            ICON_CHEVRON_RIGHT
+                                                        } else {
+                                                            ICON_CHEVRON_DOWN
+                                                        },
+                                                        14.,
+                                                        ui_theme.text_muted,
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .flex_1()
+                                                    .overflow_hidden()
+                                                    .flex()
+                                                    .items_center()
+                                                    .font_family("IBM Plex Mono")
+                                                    .text_size(px(11.))
+                                                    .font_weight(FontWeight(800.))
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
+                                                    .children(render_highlighted_segments(
+                                                        path,
+                                                        path_highlights,
+                                                        ui_theme.text_primary,
+                                                        ui_theme.accent,
+                                                        FontWeight(800.),
+                                                        FontWeight(900.),
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .font_family("IBM Plex Mono")
+                                                    .text_size(px(10.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(rgb(ui_theme.text_muted))
+                                                    .child(count_label),
+                                            )
+                                    }
+                                    SearchRow::Match {
+                                        path,
+                                        line,
+                                        preview,
+                                        preview_highlights,
+                                    } => {
+                                        let row_path = path.clone();
+                                        let path_for_click = path.clone();
+                                        let line_for_click = *line;
+                                        let line_label = SharedString::from(format!("{line}"));
+
+                                        div()
+                                            .id(ElementId::Name(SharedString::from(format!(
+                                                "palette.search.match:{path}:{line}"
+                                            ))))
+                                            .h(px(44.))
+                                            .w_full()
+                                            .px(px(10.))
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .bg(if selected {
+                                                rgb(ui_theme.accent_soft)
+                                            } else {
+                                                rgba(0x00000000)
+                                            })
+                                            .when(!selected, |this| {
+                                                this.hover(|this| {
+                                                    this.bg(rgb(ui_theme.interactive_hover))
+                                                })
+                                            })
+                                            .on_click(cx.listener(
+                                                move |this, _ev: &ClickEvent, _window, cx| {
+                                                    this.palette_selected = ix;
+                                                    this.close_palette(cx);
+                                                    this.open_note_at_line(
+                                                        path_for_click.clone(),
+                                                        line_for_click,
+                                                        cx,
+                                                    );
+                                                },
+                                            ))
+                                            .tooltip({
+                                                let tooltip_text = SharedString::from(format!(
+                                                    "{}:{} {}",
+                                                    row_path, line, preview
+                                                ));
+                                                let tooltip_theme = ui_theme;
+                                                move |_window, cx| {
+                                                    AnyView::from(cx.new(|_| TooltipPreview {
+                                                        label: tooltip_text.clone(),
+                                                        ui_theme: tooltip_theme,
+                                                    }))
+                                                }
+                                            })
+                                            .child(ui_icon(ICON_SEARCH, 16., ui_theme.text_muted))
+                                            .child(
+                                                div()
+                                                    .font_family("IBM Plex Mono")
+                                                    .text_size(px(10.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(rgb(ui_theme.text_muted))
+                                                    .child(line_label),
+                                            )
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .flex_1()
+                                                    .overflow_hidden()
+                                                    .flex()
+                                                    .items_center()
+                                                    .font_family("IBM Plex Mono")
+                                                    .text_size(px(11.))
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
+                                                    .children(render_highlighted_segments(
+                                                        preview,
+                                                        preview_highlights,
+                                                        ui_theme.text_secondary,
+                                                        ui_theme.accent,
+                                                        FontWeight(650.),
+                                                        FontWeight(850.),
+                                                    )),
+                                            )
+                                    }
+                                }
                             })
                             .collect::<Vec<_>>()
                     }
@@ -2423,6 +3790,7 @@ impl XnoteWindow {
             .bg(rgb(ui_theme.surface_alt_bg))
             .border_1()
             .border_color(rgb(ui_theme.border))
+            .occlude()
             .flex()
             .flex_col()
             .child(
@@ -2471,6 +3839,16 @@ impl XnoteWindow {
             )
             .child(
                 div()
+                    .px_3()
+                    .pb(px(6.))
+                    .font_family("IBM Plex Mono")
+                    .text_size(px(10.))
+                    .font_weight(FontWeight(650.))
+                    .text_color(rgb(ui_theme.text_muted))
+                    .child(palette_hint),
+            )
+            .child(
+                div()
                     .flex_1()
                     .bg(rgb(ui_theme.surface_alt_bg))
                     .p(px(6.))
@@ -2509,6 +3887,7 @@ impl XnoteWindow {
                     .absolute()
                     .top_0()
                     .left_0()
+                    .occlude()
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         let armed = this
@@ -2529,7 +3908,6 @@ impl XnoteWindow {
                     .flex_col()
                     .items_center()
                     .pt_8()
-                    .occlude()
                     .child(palette_box),
             )
     }
@@ -2555,6 +3933,7 @@ impl XnoteWindow {
             .bg(rgb(ui_theme.surface_alt_bg))
             .border_1()
             .border_color(rgb(ui_theme.border))
+            .occlude()
             .flex()
             .flex_col()
             .child(
@@ -2617,7 +3996,7 @@ impl XnoteWindow {
                             .text_size(px(11.))
                             .font_weight(FontWeight(650.))
                             .text_color(rgb(ui_theme.text_muted))
-                            .child("Enter to open 路 Esc to cancel"),
+                            .child("Enter to open · Esc to cancel"),
                     ),
             );
 
@@ -2656,7 +4035,6 @@ impl XnoteWindow {
                     .flex_col()
                     .items_center()
                     .pt_8()
-                    .occlude()
                     .child(prompt_box),
             )
     }
@@ -3608,6 +4986,7 @@ impl XnoteWindow {
             .bg(rgb(ui_theme.surface_alt_bg))
             .border_1()
             .border_color(rgb(ui_theme.border))
+            .occlude()
             .flex()
             .flex_col()
             .child(
@@ -3761,6 +5140,7 @@ impl XnoteWindow {
                     .absolute()
                     .top_0()
                     .left_0()
+                    .occlude()
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         let armed = this
@@ -3784,7 +5164,6 @@ impl XnoteWindow {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .occlude()
                     .child(modal),
             )
     }
@@ -3806,7 +5185,7 @@ impl XnoteWindow {
                         Timer::after(delay).await;
                     }
 
-                    let Some((query, paths_lower)) = this
+                    let Some((query, tokens, paths_lower)) = this
                         .update(&mut cx, |this, cx| {
                             if this.pending_filter_nonce != nonce {
                                 return None;
@@ -3819,7 +5198,11 @@ impl XnoteWindow {
                                 return None;
                             }
 
-                            Some((query, this.explorer_all_note_paths_lower.clone()))
+                            Some((
+                                query,
+                                split_query_tokens_lowercase(&this.explorer_filter),
+                                this.explorer_all_note_paths_lower.clone(),
+                            ))
                         })
                         .ok()
                         .flatten()
@@ -3832,7 +5215,12 @@ impl XnoteWindow {
                         .spawn(async move {
                             let mut out = Vec::new();
                             for (ix, path_lower) in paths_lower.iter().enumerate() {
-                                if path_lower.contains(&query) {
+                                let matched = if tokens.is_empty() {
+                                    path_lower.contains(&query)
+                                } else {
+                                    tokens.iter().all(|token| path_lower.contains(token))
+                                };
+                                if matched {
                                     out.push(ix);
                                 }
                             }
@@ -3877,7 +5265,9 @@ impl XnoteWindow {
                             let query = this.search_query.trim().to_string();
                             if query.is_empty() {
                                 this.search_selected = 0;
-                                this.search_results.clear();
+                                this.search_groups.clear();
+                                this.search_collapsed_paths.clear();
+                                this.refresh_search_rows_from_groups();
                                 cx.notify();
                                 return None;
                             }
@@ -3885,8 +5275,12 @@ impl XnoteWindow {
                             if let Some(cached) = this.search_query_cache.get(&query).cloned() {
                                 this.cache_stats.search_hits =
                                     this.cache_stats.search_hits.wrapping_add(1);
+                                this.search_groups = cached;
+                                this.search_collapsed_paths.retain(|path| {
+                                    this.search_groups.iter().any(|group| group.path == *path)
+                                });
                                 this.search_selected = 0;
-                                this.search_results = cached;
+                                this.refresh_search_rows_from_groups();
                                 let _ = touch_cache_order(
                                     &query,
                                     &mut this.search_query_cache_order,
@@ -3900,14 +5294,18 @@ impl XnoteWindow {
 
                             let Some(vault) = this.vault() else {
                                 this.search_selected = 0;
-                                this.search_results.clear();
+                                this.search_groups.clear();
+                                this.search_collapsed_paths.clear();
+                                this.refresh_search_rows_from_groups();
                                 cx.notify();
                                 return None;
                             };
 
                             let Some(knowledge_index) = this.knowledge_index.clone() else {
                                 this.search_selected = 0;
-                                this.search_results.clear();
+                                this.search_groups.clear();
+                                this.search_collapsed_paths.clear();
+                                this.refresh_search_rows_from_groups();
                                 cx.notify();
                                 return None;
                             };
@@ -3928,9 +5326,10 @@ impl XnoteWindow {
 
                     let query_for_task = query.clone();
 
-                    let search_rows: Vec<SearchRow> = cx
+                    let search_groups: Vec<SearchResultGroup> = cx
                         .background_executor()
                         .spawn(async move {
+                            let query_tokens = unique_case_insensitive_tokens(&query_for_task);
                             let mut out = Vec::new();
                             let outcome = knowledge_index.search(
                                 &vault,
@@ -3945,22 +5344,33 @@ impl XnoteWindow {
                                     break;
                                 }
 
-                                out.push(SearchRow::File {
-                                    path: hit.path.clone(),
-                                    match_count: hit.match_count,
-                                });
+                                let path_highlights =
+                                    collect_highlight_ranges_lowercase(&hit.path, &query_tokens);
+                                let mut matches = Vec::new();
 
                                 for preview in hit.previews {
                                     if rows >= max_rows {
                                         break;
                                     }
-                                    out.push(SearchRow::Match {
-                                        path: hit.path.clone(),
+                                    let preview_text = preview.preview;
+                                    let preview_highlights = collect_highlight_ranges_lowercase(
+                                        &preview_text,
+                                        &query_tokens,
+                                    );
+                                    matches.push(SearchMatchEntry {
                                         line: preview.line,
-                                        preview: preview.preview,
+                                        preview: preview_text,
+                                        preview_highlights,
                                     });
                                     rows += 1;
                                 }
+
+                                out.push(SearchResultGroup {
+                                    path: hit.path,
+                                    match_count: hit.match_count,
+                                    path_highlights,
+                                    matches,
+                                });
                             }
 
                             out
@@ -3976,7 +5386,7 @@ impl XnoteWindow {
                         }
 
                         this.search_query_cache
-                            .insert(query.clone(), search_rows.clone());
+                            .insert(query.clone(), search_groups.clone());
                         if let Some(evicted) = touch_cache_order(
                             &query,
                             &mut this.search_query_cache_order,
@@ -3985,10 +5395,11 @@ impl XnoteWindow {
                             this.search_query_cache.remove(&evicted);
                         }
 
-                        this.search_results = search_rows;
-                        if this.search_selected >= this.search_results.len() {
-                            this.search_selected = 0;
-                        }
+                        this.search_groups = search_groups;
+                        this.search_collapsed_paths.retain(|path| {
+                            this.search_groups.iter().any(|group| group.path == *path)
+                        });
+                        this.refresh_search_rows_from_groups();
                         cx.notify();
                     })
                     .ok();
@@ -4011,8 +5422,8 @@ impl XnoteWindow {
                         Timer::after(delay).await;
                     }
 
-                    let Some((query, knowledge_index, generation)) = this
-                        .update(&mut cx, |this, cx| {
+                    let Some((query, vault, knowledge_index, search_options, generation, mode)) =
+                        this.update(&mut cx, |this, cx| {
                             if this.pending_palette_nonce != nonce {
                                 return None;
                             }
@@ -4021,34 +5432,54 @@ impl XnoteWindow {
                             if query.is_empty() {
                                 this.palette_selected = 0;
                                 this.palette_results.clear();
+                                this.palette_search_groups.clear();
+                                this.palette_search_collapsed_paths.clear();
+                                this.refresh_palette_search_rows_from_groups();
                                 cx.notify();
                                 return None;
                             }
 
-                            if let Some(cached) = this.quick_open_query_cache.get(&query).cloned() {
-                                this.cache_stats.quick_open_hits =
-                                    this.cache_stats.quick_open_hits.wrapping_add(1);
-                                this.palette_selected = 0;
-                                this.palette_results = cached;
-                                let _ = touch_cache_order(
-                                    &query,
-                                    &mut this.quick_open_query_cache_order,
-                                    QUICK_OPEN_CACHE_CAPACITY,
-                                );
-                                cx.notify();
-                                return None;
+                            if this.palette_mode == PaletteMode::QuickOpen {
+                                if let Some(cached) =
+                                    this.quick_open_query_cache.get(&query).cloned()
+                                {
+                                    this.cache_stats.quick_open_hits =
+                                        this.cache_stats.quick_open_hits.wrapping_add(1);
+                                    this.palette_selected = 0;
+                                    this.palette_results = cached;
+                                    this.palette_search_groups.clear();
+                                    this.palette_search_collapsed_paths.clear();
+                                    this.refresh_palette_search_rows_from_groups();
+                                    let _ = touch_cache_order(
+                                        &query,
+                                        &mut this.quick_open_query_cache_order,
+                                        QUICK_OPEN_CACHE_CAPACITY,
+                                    );
+                                    cx.notify();
+                                    return None;
+                                }
+                                this.cache_stats.quick_open_misses =
+                                    this.cache_stats.quick_open_misses.wrapping_add(1);
                             }
-                            this.cache_stats.quick_open_misses =
-                                this.cache_stats.quick_open_misses.wrapping_add(1);
 
                             let Some(knowledge_index) = this.knowledge_index.clone() else {
                                 this.palette_selected = 0;
                                 this.palette_results.clear();
+                                this.palette_search_groups.clear();
+                                this.palette_search_collapsed_paths.clear();
+                                this.refresh_palette_search_rows_from_groups();
                                 cx.notify();
                                 return None;
                             };
 
-                            Some((query, knowledge_index, this.index_generation))
+                            Some((
+                                query,
+                                this.vault(),
+                                knowledge_index,
+                                this.search_options.clone(),
+                                this.index_generation,
+                                this.palette_mode,
+                            ))
                         })
                         .ok()
                         .flatten()
@@ -4058,14 +5489,82 @@ impl XnoteWindow {
 
                     let query_for_task = query.clone();
 
-                    let matched_paths: Vec<OpenPathMatch> = cx
+                    let (matched_paths, search_groups): (
+                        Vec<OpenPathMatch>,
+                        Vec<SearchResultGroup>,
+                    ) = cx
                         .background_executor()
                         .spawn(async move {
-                            knowledge_index
-                                .quick_open_paths(&query_for_task, 200)
-                                .into_iter()
-                                .map(|path| OpenPathMatch { path })
-                                .collect()
+                            let query_tokens = unique_case_insensitive_tokens(&query_for_task);
+                            match mode {
+                                PaletteMode::QuickOpen => (
+                                    apply_quick_open_weighted_ranking(
+                                        &query_for_task,
+                                        knowledge_index.quick_open_paths(&query_for_task, 300),
+                                        200,
+                                    )
+                                    .into_iter()
+                                    .map(|path| OpenPathMatch {
+                                        path: path.clone(),
+                                        path_highlights: collect_highlight_ranges_lowercase(
+                                            &path,
+                                            &query_tokens,
+                                        ),
+                                    })
+                                    .collect(),
+                                    Vec::new(),
+                                ),
+                                PaletteMode::Search => {
+                                    let Some(vault) = vault else {
+                                        return (Vec::new(), Vec::new());
+                                    };
+                                    let mut out = Vec::new();
+                                    let max_rows = search_options.max_match_rows;
+                                    let mut rows = 0usize;
+                                    let outcome = knowledge_index.search(
+                                        &vault,
+                                        &query_for_task,
+                                        search_options.clone(),
+                                    );
+                                    for hit in outcome.hits {
+                                        if rows >= max_rows {
+                                            break;
+                                        }
+                                        let path_highlights = collect_highlight_ranges_lowercase(
+                                            &hit.path,
+                                            &query_tokens,
+                                        );
+                                        let mut matches = Vec::new();
+
+                                        for preview in hit.previews {
+                                            if rows >= max_rows {
+                                                break;
+                                            }
+                                            let preview_text = preview.preview;
+                                            let preview_highlights =
+                                                collect_highlight_ranges_lowercase(
+                                                    &preview_text,
+                                                    &query_tokens,
+                                                );
+                                            matches.push(SearchMatchEntry {
+                                                line: preview.line,
+                                                preview: preview_text,
+                                                preview_highlights,
+                                            });
+                                            rows += 1;
+                                        }
+
+                                        out.push(SearchResultGroup {
+                                            path: hit.path,
+                                            match_count: hit.match_count,
+                                            path_highlights,
+                                            matches,
+                                        });
+                                    }
+                                    (Vec::new(), out)
+                                }
+                                PaletteMode::Commands => (Vec::new(), Vec::new()),
+                            }
                         })
                         .await;
 
@@ -4077,18 +5576,32 @@ impl XnoteWindow {
                             return;
                         }
 
-                        this.quick_open_query_cache
-                            .insert(query.clone(), matched_paths.clone());
-                        if let Some(evicted) = touch_cache_order(
-                            &query,
-                            &mut this.quick_open_query_cache_order,
-                            QUICK_OPEN_CACHE_CAPACITY,
-                        ) {
-                            this.quick_open_query_cache.remove(&evicted);
+                        if mode == PaletteMode::QuickOpen {
+                            this.quick_open_query_cache
+                                .insert(query.clone(), matched_paths.clone());
+                            if let Some(evicted) = touch_cache_order(
+                                &query,
+                                &mut this.quick_open_query_cache_order,
+                                QUICK_OPEN_CACHE_CAPACITY,
+                            ) {
+                                this.quick_open_query_cache.remove(&evicted);
+                            }
                         }
 
                         this.palette_results = matched_paths;
-                        if this.palette_selected >= this.palette_results.len() {
+                        this.palette_search_groups = search_groups;
+                        this.palette_search_collapsed_paths.retain(|path| {
+                            this.palette_search_groups
+                                .iter()
+                                .any(|group| group.path == *path)
+                        });
+                        this.refresh_palette_search_rows_from_groups();
+                        let len = match mode {
+                            PaletteMode::QuickOpen => this.palette_results.len(),
+                            PaletteMode::Search => this.palette_search_results.len(),
+                            PaletteMode::Commands => this.filtered_palette_command_indices().len(),
+                        };
+                        if this.palette_selected >= len {
                             this.palette_selected = 0;
                         }
                         cx.notify();
@@ -4279,7 +5792,8 @@ impl XnoteWindow {
                     self.expand_folder_ancestors(&path);
                 }
                 VaultWatchChange::FolderRemoved { path } => {
-                    let (removed, folder_bookmarks_changed) = self.apply_folder_removed_change(&path);
+                    let (removed, folder_bookmarks_changed) =
+                        self.apply_folder_removed_change(&path);
                     folder_removed_note_paths.extend(removed);
                     bookmarks_changed |= folder_bookmarks_changed;
                 }
@@ -4304,35 +5818,8 @@ impl XnoteWindow {
             && new_note_paths.is_empty()
             && removed_note_paths.is_empty()
         {
-            match derive_prefix_moves(&moved_note_pairs) {
-                Some(prefix_moves) => {
-                    if !prefix_moves.is_empty() {
-                        let mut move_map = moved_note_pairs
-                            .into_iter()
-                            .collect::<HashMap<String, String>>();
-
-                        for from in &existing_paths_vec {
-                            if move_map.contains_key(from) {
-                                continue;
-                            }
-
-                            for (old_prefix, new_prefix) in &prefix_moves {
-                                let Some(to) =
-                                    rewrite_path_with_prefix(from, old_prefix, new_prefix)
-                                else {
-                                    continue;
-                                };
-                                if from != &to {
-                                    move_map.insert(from.clone(), to);
-                                }
-                                break;
-                            }
-                        }
-
-                        moved_note_pairs = move_map.into_iter().collect();
-                        moved_note_pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-                    }
-                }
+            match expand_note_move_pairs_with_prefix(&existing_paths_vec, &moved_note_pairs) {
+                Some(expanded) => moved_note_pairs = expanded,
                 None => {
                     self.watcher_status.last_error = Some(SharedString::from(
                         "watch prefix-move conflict detected; fallback to rescan",
@@ -4370,13 +5857,37 @@ impl XnoteWindow {
         if !moved_note_pairs.is_empty() {
             for (from, to) in &moved_note_pairs {
                 if self.open_note_path.as_deref() == Some(from.as_str()) {
+                    self.remember_current_tab_view_state();
                     self.open_note_path = Some(to.clone());
+                }
+                if self.pinned_editors.remove(from) {
+                    self.pinned_editors.insert(to.clone());
+                }
+                for history in self.editor_group_note_history.values_mut() {
+                    for path in history.iter_mut() {
+                        if path == from {
+                            *path = to.clone();
+                        }
+                    }
+                }
+                if self.pending_external_note_reload.as_deref() == Some(from.as_str()) {
+                    self.pending_external_note_reload = Some(to.clone());
+                }
+                self.move_note_content_cache_path(from, to);
+                for group in &mut self.editor_groups {
+                    if group.note_path.as_deref() == Some(from.as_str()) {
+                        group.note_path = Some(to.clone());
+                    }
                 }
 
                 for path in &mut self.open_editors {
                     if path == from {
                         *path = to.clone();
                     }
+                }
+
+                if let Some(state) = self.editor_tab_view_state.remove(from) {
+                    self.editor_tab_view_state.insert(to.clone(), state);
                 }
 
                 if self.selected_note.as_deref() == Some(from.as_str()) {
@@ -4410,11 +5921,20 @@ impl XnoteWindow {
 
         if !removed_note_paths.is_empty() {
             for path in &removed_note_paths {
+                self.evict_note_content_cache_path(path);
+                self.pinned_editors.remove(path);
+                for history in self.editor_group_note_history.values_mut() {
+                    history.retain(|entry| entry != path);
+                }
+                if self.pending_external_note_reload.as_deref() == Some(path.as_str()) {
+                    self.pending_external_note_reload = None;
+                }
                 if self.open_note_path.as_deref() == Some(path.as_str()) {
                     self.open_note_path = None;
                     self.open_note_content.clear();
                     self.editor_buffer = None;
                     self.editor_view_mode = EditorViewMode::Edit;
+                    self.editor_split_saved_mode = EditorViewMode::Edit;
                     self.open_note_dirty = false;
                     self.open_note_word_count = 0;
                     self.open_note_heading_count = 0;
@@ -4427,7 +5947,13 @@ impl XnoteWindow {
                     self.pending_markdown_invalidation = None;
                     self.pending_markdown_parse_nonce = 0;
                 }
+                for group in &mut self.editor_groups {
+                    if group.note_path.as_deref() == Some(path.as_str()) {
+                        group.note_path = None;
+                    }
+                }
                 self.open_editors.retain(|editor_path| editor_path != path);
+                self.editor_tab_view_state.remove(path);
                 self.folder_notes
                     .entry(folder_of_note_path(path))
                     .or_default()
@@ -4454,15 +5980,28 @@ impl XnoteWindow {
         }
 
         for path in upsert_paths {
+            self.evict_note_content_cache_path(&path);
             if let Err(err) = next_index.upsert_note(&vault, &path) {
                 self.watcher_status.last_error =
                     Some(SharedString::from(format!("watch upsert failed: {err}")));
                 self.rescan_vault(cx);
                 return;
             }
+
+            if self.open_note_path.as_deref() == Some(path.as_str()) {
+                if self.open_note_dirty {
+                    self.pending_external_note_reload = Some(path.clone());
+                    self.status =
+                        SharedString::from("External change pending; save or revert to reload");
+                } else {
+                    self.pending_external_note_reload = None;
+                    self.open_note(path.clone(), cx);
+                }
+            }
         }
 
         for path in &new_note_paths {
+            self.evict_note_content_cache_path(path);
             if let Err(err) = next_index.upsert_note(&vault, path) {
                 self.watcher_status.last_error = Some(SharedString::from(format!(
                     "watch new-note upsert failed: {err}"
@@ -4514,14 +6053,17 @@ impl XnoteWindow {
         self.watcher_status.revision = self.watcher_status.revision.wrapping_add(1);
         self.watcher_status.last_error = None;
         self.bump_index_generation();
-        self.rebuild_explorer_rows();
+        self.rebuild_explorer_rows(cx);
         self.status = SharedString::from("External note content updated");
 
         if !self.search_query.trim().is_empty() {
             self.schedule_apply_search(Duration::ZERO, cx);
         }
         if self.palette_open
-            && self.palette_mode == PaletteMode::QuickOpen
+            && matches!(
+                self.palette_mode,
+                PaletteMode::QuickOpen | PaletteMode::Search
+            )
             && !self.palette_query.trim().is_empty()
         {
             self.schedule_apply_palette_results(Duration::ZERO, cx);
@@ -4532,8 +6074,18 @@ impl XnoteWindow {
         self.index_generation = self.index_generation.wrapping_add(1);
         self.search_query_cache.clear();
         self.search_query_cache_order.clear();
+        self.search_groups.clear();
+        self.search_collapsed_paths.clear();
+        self.refresh_search_rows_from_groups();
         self.quick_open_query_cache.clear();
         self.quick_open_query_cache_order.clear();
+        self.palette_search_groups.clear();
+        self.palette_search_collapsed_paths.clear();
+        self.refresh_palette_search_rows_from_groups();
+        self.recent_palette_quick_open_queries.clear();
+        self.recent_palette_search_queries.clear();
+        self.recent_panel_search_queries.clear();
+        self.recent_explorer_filter_queries.clear();
     }
 
     fn record_cache_stats_snapshot(&mut self, epoch_secs: u64) {
@@ -4688,7 +6240,13 @@ impl XnoteWindow {
                     cx.notify();
                 }
             }
-            "enter" | "return" => {}
+            "enter" | "return" => {
+                Self::push_recent_query(
+                    &mut self.recent_explorer_filter_queries,
+                    self.explorer_filter.trim(),
+                );
+                cx.notify();
+            }
             _ => {
                 if ctrl {
                     return;
@@ -4857,7 +6415,9 @@ impl XnoteWindow {
                 if !self.search_query.is_empty() {
                     self.search_query.clear();
                     self.search_selected = 0;
-                    self.search_results.clear();
+                    self.search_groups.clear();
+                    self.search_collapsed_paths.clear();
+                    self.refresh_search_rows_from_groups();
                     self.pending_search_nonce = 0;
                     self.status = SharedString::from("Ready");
                     cx.notify();
@@ -4884,14 +6444,49 @@ impl XnoteWindow {
                     cx.notify();
                 }
             }
+            "left" => {
+                let selected_path = self
+                    .search_results
+                    .get(self.search_selected)
+                    .and_then(|row| match row {
+                        SearchRow::File { path, .. } => Some(path.clone()),
+                        _ => None,
+                    });
+                if let Some(path) = selected_path {
+                    if !self.search_collapsed_paths.contains(&path) {
+                        self.toggle_search_group_collapsed(&path);
+                        cx.notify();
+                    }
+                }
+            }
+            "right" => {
+                let selected_path = self
+                    .search_results
+                    .get(self.search_selected)
+                    .and_then(|row| match row {
+                        SearchRow::File { path, .. } => Some(path.clone()),
+                        _ => None,
+                    });
+                if let Some(path) = selected_path {
+                    if self.search_collapsed_paths.contains(&path) {
+                        self.toggle_search_group_collapsed(&path);
+                        cx.notify();
+                    }
+                }
+            }
             "enter" | "return" => {
-                if let Some(row) = self.search_results.get(self.search_selected) {
+                if let Some(row) = self.search_results.get(self.search_selected).cloned() {
+                    Self::push_recent_query(
+                        &mut self.recent_panel_search_queries,
+                        self.search_query.trim(),
+                    );
                     match row {
                         SearchRow::File { path, .. } => {
-                            self.open_note(path.clone(), cx);
+                            self.toggle_search_group_collapsed(&path);
+                            cx.notify();
                         }
                         SearchRow::Match { path, line, .. } => {
-                            self.open_note_at_line(path.clone(), *line, cx);
+                            self.open_note_at_line(path, line, cx);
                         }
                     }
                 }
@@ -4950,6 +6545,9 @@ impl XnoteWindow {
                     self.palette_query.clear();
                     self.palette_selected = 0;
                     self.palette_results.clear();
+                    self.palette_search_groups.clear();
+                    self.palette_search_collapsed_paths.clear();
+                    self.refresh_palette_search_rows_from_groups();
                     self.pending_palette_nonce = 0;
                     cx.notify();
                     return;
@@ -4959,6 +6557,21 @@ impl XnoteWindow {
                     self.palette_query.clear();
                     self.palette_selected = 0;
                     self.palette_results.clear();
+                    self.palette_search_groups.clear();
+                    self.palette_search_collapsed_paths.clear();
+                    self.refresh_palette_search_rows_from_groups();
+                    self.pending_palette_nonce = 0;
+                    cx.notify();
+                    return;
+                }
+                "f" => {
+                    self.palette_mode = PaletteMode::Search;
+                    self.palette_query.clear();
+                    self.palette_selected = 0;
+                    self.palette_results.clear();
+                    self.palette_search_groups.clear();
+                    self.palette_search_collapsed_paths.clear();
+                    self.refresh_palette_search_rows_from_groups();
                     self.pending_palette_nonce = 0;
                     cx.notify();
                     return;
@@ -4973,7 +6586,7 @@ impl XnoteWindow {
                                 self.palette_selected = 0;
                                 match self.palette_mode {
                                     PaletteMode::Commands => cx.notify(),
-                                    PaletteMode::QuickOpen => {
+                                    PaletteMode::QuickOpen | PaletteMode::Search => {
                                         self.schedule_apply_palette_results(Duration::ZERO, cx);
                                         cx.notify();
                                     }
@@ -4990,6 +6603,7 @@ impl XnoteWindow {
         let list_len = match self.palette_mode {
             PaletteMode::Commands => self.filtered_palette_command_indices().len(),
             PaletteMode::QuickOpen => self.palette_results.len(),
+            PaletteMode::Search => self.palette_search_results.len(),
         };
 
         match key.as_str() {
@@ -5003,6 +6617,40 @@ impl XnoteWindow {
                 if self.palette_selected + 1 < list_len {
                     self.palette_selected += 1;
                     cx.notify();
+                }
+            }
+            "left" => {
+                if self.palette_mode == PaletteMode::Search {
+                    let selected_path = self
+                        .palette_search_results
+                        .get(self.palette_selected)
+                        .and_then(|row| match row {
+                            SearchRow::File { path, .. } => Some(path.clone()),
+                            _ => None,
+                        });
+                    if let Some(path) = selected_path {
+                        if !self.palette_search_collapsed_paths.contains(&path) {
+                            self.toggle_palette_search_group_collapsed(&path);
+                            cx.notify();
+                        }
+                    }
+                }
+            }
+            "right" => {
+                if self.palette_mode == PaletteMode::Search {
+                    let selected_path = self
+                        .palette_search_results
+                        .get(self.palette_selected)
+                        .and_then(|row| match row {
+                            SearchRow::File { path, .. } => Some(path.clone()),
+                            _ => None,
+                        });
+                    if let Some(path) = selected_path {
+                        if self.palette_search_collapsed_paths.contains(&path) {
+                            self.toggle_palette_search_group_collapsed(&path);
+                            cx.notify();
+                        }
+                    }
                 }
             }
             "enter" | "return" => match self.palette_mode {
@@ -5020,9 +6668,36 @@ impl XnoteWindow {
                     let Some(open_match) = self.palette_results.get(self.palette_selected) else {
                         return;
                     };
+                    Self::push_recent_query(
+                        &mut self.recent_palette_quick_open_queries,
+                        self.palette_query.trim(),
+                    );
                     let path = open_match.path.clone();
                     self.close_palette(cx);
                     self.open_note(path, cx);
+                }
+                PaletteMode::Search => {
+                    let Some(row) = self
+                        .palette_search_results
+                        .get(self.palette_selected)
+                        .cloned()
+                    else {
+                        return;
+                    };
+                    Self::push_recent_query(
+                        &mut self.recent_palette_search_queries,
+                        self.palette_query.trim(),
+                    );
+                    match row {
+                        SearchRow::File { path, .. } => {
+                            self.toggle_palette_search_group_collapsed(&path);
+                            cx.notify();
+                        }
+                        SearchRow::Match { path, line, .. } => {
+                            self.close_palette(cx);
+                            self.open_note_at_line(path, line, cx);
+                        }
+                    }
                 }
             },
             "backspace" => {
@@ -5030,7 +6705,7 @@ impl XnoteWindow {
                     self.palette_selected = 0;
                     match self.palette_mode {
                         PaletteMode::Commands => cx.notify(),
-                        PaletteMode::QuickOpen => {
+                        PaletteMode::QuickOpen | PaletteMode::Search => {
                             self.schedule_apply_palette_results(Duration::from_millis(60), cx);
                             cx.notify();
                         }
@@ -5052,7 +6727,7 @@ impl XnoteWindow {
                 self.palette_selected = 0;
                 match self.palette_mode {
                     PaletteMode::Commands => cx.notify(),
-                    PaletteMode::QuickOpen => {
+                    PaletteMode::QuickOpen | PaletteMode::Search => {
                         self.schedule_apply_palette_results(Duration::from_millis(60), cx);
                         cx.notify();
                     }
@@ -5061,7 +6736,7 @@ impl XnoteWindow {
         }
     }
 
-    fn rebuild_explorer_rows(&mut self) {
+    fn rebuild_explorer_rows(&mut self, _cx: &mut Context<Self>) {
         let root_name = match &self.vault_state {
             VaultState::Opened { root_name, .. } => root_name.to_string(),
             _ => "Vault".to_string(),
@@ -5159,7 +6834,7 @@ impl XnoteWindow {
         }
 
         self.drag_over = None;
-        self.rebuild_explorer_rows();
+        self.rebuild_explorer_rows(cx);
         cx.notify();
     }
 
@@ -5227,9 +6902,10 @@ impl XnoteWindow {
         self.selected_explorer_folder = Some(folder.clone());
         self.expand_folder_ancestors(&folder);
         self.watch_scan_entries = self.explorer_all_note_paths.len();
-        self.watch_scan_fingerprint = compute_entries_fingerprint(self.explorer_all_note_paths.as_ref());
+        self.watch_scan_fingerprint =
+            compute_entries_fingerprint(self.explorer_all_note_paths.as_ref());
 
-        self.rebuild_explorer_rows();
+        self.rebuild_explorer_rows(cx);
         if self.is_filtering() {
             self.schedule_apply_filter(Duration::ZERO, cx);
         }
@@ -5256,7 +6932,7 @@ impl XnoteWindow {
             }
         }
 
-        self.rebuild_explorer_rows();
+        self.rebuild_explorer_rows(cx);
         if self.is_filtering() {
             self.schedule_apply_filter(Duration::ZERO, cx);
         }
@@ -5446,7 +7122,7 @@ impl XnoteWindow {
             self.watch_scan_fingerprint =
                 compute_entries_fingerprint(self.explorer_all_note_paths.as_ref());
             self.bump_index_generation();
-            self.rebuild_explorer_rows();
+            self.rebuild_explorer_rows(cx);
 
             if self.is_filtering() {
                 self.schedule_apply_filter(Duration::ZERO, cx);
@@ -5455,7 +7131,10 @@ impl XnoteWindow {
                 self.schedule_apply_search(Duration::ZERO, cx);
             }
             if self.palette_open
-                && self.palette_mode == PaletteMode::QuickOpen
+                && matches!(
+                    self.palette_mode,
+                    PaletteMode::QuickOpen | PaletteMode::Search
+                )
                 && !self.palette_query.trim().is_empty()
             {
                 self.schedule_apply_palette_results(Duration::ZERO, cx);
@@ -5471,9 +7150,7 @@ impl XnoteWindow {
         let notes_to_remove = self
             .explorer_all_note_paths
             .iter()
-            .filter(|path| {
-                path == &folder || path.starts_with(&format!("{folder}/"))
-            })
+            .filter(|path| path == &folder || path.starts_with(&format!("{folder}/")))
             .cloned()
             .collect::<Vec<_>>();
 
@@ -5483,7 +7160,16 @@ impl XnoteWindow {
                 &mut self.explorer_folder_children,
                 &mut self.folder_notes,
             );
-            self.open_editors.retain(|editor_path| editor_path != note_path);
+            self.open_editors
+                .retain(|editor_path| editor_path != note_path);
+            self.pinned_editors.remove(note_path);
+            self.evict_note_content_cache_path(note_path);
+            for history in self.editor_group_note_history.values_mut() {
+                history.retain(|existing| existing != note_path);
+            }
+            if self.pending_external_note_reload.as_deref() == Some(note_path.as_str()) {
+                self.pending_external_note_reload = None;
+            }
             if self.selected_note.as_deref() == Some(note_path.as_str()) {
                 self.selected_note = None;
             }
@@ -5493,16 +7179,22 @@ impl XnoteWindow {
                 self.editor_buffer = None;
                 self.open_note_loading = false;
                 self.open_note_dirty = false;
+                self.editor_view_mode = EditorViewMode::Edit;
+                self.editor_split_saved_mode = EditorViewMode::Edit;
             }
-            self.app_settings
-                .bookmarked_notes
-                .retain(|bookmarked| {
-                    let keep = bookmarked != note_path;
-                    if !keep {
-                        bookmarks_changed = true;
-                    }
-                    keep
-                });
+            for group in &mut self.editor_groups {
+                if group.note_path.as_deref() == Some(note_path.as_str()) {
+                    group.note_path = None;
+                }
+            }
+            self.editor_tab_view_state.remove(note_path);
+            self.app_settings.bookmarked_notes.retain(|bookmarked| {
+                let keep = bookmarked != note_path;
+                if !keep {
+                    bookmarks_changed = true;
+                }
+                keep
+            });
         }
 
         self.explorer_folder_children.remove(folder);
@@ -5517,9 +7209,7 @@ impl XnoteWindow {
         self.explorer_all_note_paths = Arc::new(
             self.explorer_all_note_paths
                 .iter()
-                .filter(|path| {
-                    !(path == &folder || path.starts_with(&format!("{folder}/")))
-                })
+                .filter(|path| !(path == &folder || path.starts_with(&format!("{folder}/"))))
                 .cloned()
                 .collect(),
         );
@@ -5564,7 +7254,13 @@ impl XnoteWindow {
             );
 
             if self.open_note_path.as_deref() == Some(old_path.as_str()) {
+                self.remember_current_tab_view_state();
                 self.open_note_path = Some(new_path.clone());
+            }
+            for group in &mut self.editor_groups {
+                if group.note_path.as_deref() == Some(old_path.as_str()) {
+                    group.note_path = Some(new_path.clone());
+                }
             }
             if self.selected_note.as_deref() == Some(old_path.as_str()) {
                 self.selected_note = Some(new_path.clone());
@@ -5573,6 +7269,24 @@ impl XnoteWindow {
                 if open == old_path {
                     *open = new_path.clone();
                 }
+            }
+            if self.pinned_editors.remove(old_path) {
+                self.pinned_editors.insert(new_path.clone());
+            }
+            self.move_note_content_cache_path(old_path, new_path);
+            if self.pending_external_note_reload.as_deref() == Some(old_path.as_str()) {
+                self.pending_external_note_reload = Some(new_path.clone());
+            }
+            for history in self.editor_group_note_history.values_mut() {
+                for entry in history.iter_mut() {
+                    if entry == old_path {
+                        *entry = new_path.clone();
+                    }
+                }
+                history.retain(|entry| !entry.is_empty());
+            }
+            if let Some(state) = self.editor_tab_view_state.remove(old_path) {
+                self.editor_tab_view_state.insert(new_path.clone(), state);
             }
             for bookmarked in &mut self.app_settings.bookmarked_notes {
                 if bookmarked == old_path {
@@ -5621,6 +7335,10 @@ impl XnoteWindow {
             return;
         };
 
+        self.ensure_active_group_exists();
+
+        self.remember_current_tab_view_state();
+
         self.pending_open_note_cursor = self
             .pending_open_note_cursor
             .take()
@@ -5629,17 +7347,21 @@ impl XnoteWindow {
         self.selected_note = Some(note_path.clone());
         self.selected_explorer_folder = Some(folder_of_note_path(&note_path));
         if self.expand_note_ancestors(&note_path) {
-            self.rebuild_explorer_rows();
+            self.rebuild_explorer_rows(cx);
         }
         if !self.open_editors.iter().any(|p| p == &note_path) {
             self.open_editors.push(note_path.clone());
         }
         self.open_note_path = Some(note_path.clone());
-        self.open_note_loading = true;
+        self.sync_active_group_note_path();
+        self.record_group_note_history(self.active_editor_group_id, &note_path);
+        let cached_content = self.cached_note_content(&note_path);
+        let had_cached_content = cached_content.is_some();
+        self.open_note_loading = !had_cached_content;
         self.open_note_dirty = false;
         self.open_note_content.clear();
         self.editor_buffer = None;
-        self.editor_view_mode = EditorViewMode::Edit;
+        self.restore_tab_view_state_or_default(&note_path);
         self.edit_latency_stats = EditLatencyStats::default();
         self.open_note_heading_count = 0;
         self.open_note_link_count = 0;
@@ -5662,7 +7384,13 @@ impl XnoteWindow {
         let open_nonce = self.next_note_open_nonce;
         self.current_note_open_nonce = open_nonce;
 
-        self.status = SharedString::from(format!("Loading note: {note_path}"));
+        if let Some(content) = cached_content {
+            self.apply_loaded_note_content(&note_path, content, cx);
+            self.status = SharedString::from("Ready");
+        } else {
+            self.status = SharedString::from(format!("Loading note: {note_path}"));
+        }
+        self.sync_active_group_note_path();
         cx.notify();
 
         cx.spawn(
@@ -5690,46 +7418,29 @@ impl XnoteWindow {
                         this.open_note_loading = false;
                         match read_result {
                             Ok(content) => {
-                                this.open_note_content = content;
-                                this.editor_buffer = Some(EditorBuffer::new(&this.open_note_content));
-                                this.open_note_word_count = count_words(&this.open_note_content);
-                                this.pending_markdown_invalidation = Some(
-                                    MarkdownInvalidationWindow::new(0, this.open_note_content.len()),
-                                );
-                                this.schedule_markdown_parse(Duration::ZERO, cx);
-
-                                if let Some((pending_path, pending_line)) =
-                                    this.pending_open_note_cursor.take()
-                                {
-                                    if pending_path == note_path {
-                                        let offset = byte_offset_for_line(
-                                            &this.open_note_content,
-                                            pending_line,
-                                        );
-                                        this.editor_selected_range = offset..offset;
-                                        this.editor_selection_reversed = false;
-                                        this.editor_preferred_x = None;
-                                    } else {
-                                        this.pending_open_note_cursor =
-                                            Some((pending_path, pending_line));
-                                    }
-                                }
-
+                                this.apply_loaded_note_content(&note_path, content, cx);
                                 this.status = SharedString::from("Ready");
                             }
                             Err(err) => {
-                                this.open_note_content = format!("Failed to load note: {err}");
-                                this.editor_buffer = Some(EditorBuffer::new(&this.open_note_content));
-                                this.open_note_word_count = 0;
-                                this.open_note_heading_count = 0;
-                                this.open_note_link_count = 0;
-                                this.open_note_code_fence_count = 0;
-                                this.markdown_preview.headings.clear();
-                                this.markdown_preview.blocks.clear();
-                                this.markdown_diagnostics.clear();
-                                this.editor_highlight_spans.clear();
-                                this.pending_markdown_invalidation = None;
-                                this.status = SharedString::from("Failed to load note");
+                                if !had_cached_content {
+                                    this.open_note_content = format!("Failed to load note: {err}");
+                                    this.editor_buffer =
+                                        Some(EditorBuffer::new(&this.open_note_content));
+                                    this.open_note_word_count = 0;
+                                    this.open_note_heading_count = 0;
+                                    this.open_note_link_count = 0;
+                                    this.open_note_code_fence_count = 0;
+                                    this.markdown_preview.headings.clear();
+                                    this.markdown_preview.blocks.clear();
+                                    this.markdown_diagnostics.clear();
+                                    this.editor_highlight_spans.clear();
+                                    this.pending_markdown_invalidation = None;
+                                    this.status = SharedString::from("Failed to load note");
+                                } else {
+                                    this.status = SharedString::from(format!(
+                                        "Read failed; showing cached content: {err}"
+                                    ));
+                                }
                             }
                         }
 
@@ -5880,13 +7591,7 @@ impl XnoteWindow {
             return;
         }
 
-        self.apply_editor_transaction(
-            range,
-            new_text,
-            EditorMutationSource::Keyboard,
-            false,
-            cx,
-        );
+        self.apply_editor_transaction(range, new_text, EditorMutationSource::Keyboard, false, cx);
     }
 
     fn apply_editor_transaction(
@@ -6006,7 +7711,9 @@ impl XnoteWindow {
                     xnote_core::markdown::MarkdownBlockKind::CodeFence => {
                         MarkdownPreviewBlockKind::CodeFence
                     }
-                    xnote_core::markdown::MarkdownBlockKind::Quote => MarkdownPreviewBlockKind::Quote,
+                    xnote_core::markdown::MarkdownBlockKind::Quote => {
+                        MarkdownPreviewBlockKind::Quote
+                    }
                     xnote_core::markdown::MarkdownBlockKind::List => MarkdownPreviewBlockKind::List,
                 },
                 text: block.text.clone(),
@@ -6023,7 +7730,17 @@ impl XnoteWindow {
     }
 
     fn set_editor_view_mode(&mut self, mode: EditorViewMode, cx: &mut Context<Self>) {
+        let previous = self.editor_view_mode;
+        if mode == EditorViewMode::Split {
+            if previous != EditorViewMode::Split {
+                self.editor_split_saved_mode = previous;
+            }
+        } else if mode != EditorViewMode::Split {
+            self.editor_split_saved_mode = mode;
+        }
+
         self.editor_view_mode = mode;
+        self.remember_current_tab_view_state();
         if mode != EditorViewMode::Edit {
             self.pending_markdown_invalidation = Some(MarkdownInvalidationWindow::new(
                 0,
@@ -6035,12 +7752,25 @@ impl XnoteWindow {
     }
 
     fn toggle_editor_split_mode(&mut self, cx: &mut Context<Self>) {
-        let next = if self.editor_view_mode == EditorViewMode::Split {
-            EditorViewMode::Edit
-        } else {
-            EditorViewMode::Split
-        };
-        self.set_editor_view_mode(next, cx);
+        self.split_active_editor_group(cx);
+    }
+
+    fn on_active_split_drag_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.on_splitter_drag_mouse_move(event, window, cx);
+    }
+
+    fn on_active_split_drag_mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.on_splitter_drag_mouse_up(event, window, cx);
     }
 
     fn editor_move_vertical(&mut self, direction: i32, selecting: bool, cx: &mut Context<Self>) {
@@ -6180,6 +7910,15 @@ impl XnoteWindow {
 
         if ctrl {
             match key.as_str() {
+                "tab" => {
+                    if shift {
+                        self.focus_last_editor_group(cx);
+                    } else {
+                        let group_id = self.active_editor_group_id;
+                        self.swap_group_note_history(group_id, cx);
+                    }
+                    return;
+                }
                 "a" => {
                     self.editor_select_all(cx);
                     return;
@@ -6200,8 +7939,36 @@ impl XnoteWindow {
             }
         }
 
+        if ctrl && shift {
+            match key.as_str() {
+                "\\" => {
+                    self.split_active_group_to_new_note(cx);
+                    return;
+                }
+                "w" => {
+                    self.close_editor_group(self.active_editor_group_id, cx);
+                    return;
+                }
+                "p" => {
+                    if let Some(path) = self.open_note_path.clone() {
+                        self.toggle_pin_editor(&path, cx);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if alt {
             match key.as_str() {
+                "left" => {
+                    self.focus_previous_editor_group(cx);
+                    return;
+                }
+                "right" => {
+                    self.focus_next_editor_group(cx);
+                    return;
+                }
                 "1" => {
                     self.panel_mode = PanelMode::Explorer;
                     cx.notify();
@@ -6210,6 +7977,20 @@ impl XnoteWindow {
                 "2" => {
                     self.panel_mode = PanelMode::Search;
                     cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if ctrl && alt {
+            match key.as_str() {
+                "right" => {
+                    self.move_current_editor_to_next_group(cx);
+                    return;
+                }
+                "left" => {
+                    self.focus_last_editor_group(cx);
                     return;
                 }
                 _ => {}
@@ -6292,7 +8073,7 @@ impl XnoteWindow {
                 }
             }
             "enter" | "return" => self.editor_replace_selection("\n", cx),
-            "tab" => self.editor_replace_selection("\t", cx),
+            "tab" if !ctrl && !alt => self.editor_replace_selection("\t", cx),
             _ => {}
         }
     }
@@ -6349,6 +8130,8 @@ impl XnoteWindow {
                         return;
                     };
 
+                    let persisted_content = content_to_save.clone();
+
                     let save_result: anyhow::Result<()> = cx
                         .background_executor()
                         .spawn({
@@ -6369,6 +8152,8 @@ impl XnoteWindow {
                         match save_result {
                             Ok(()) => {
                                 this.open_note_dirty = false;
+                                this.cache_note_content(&note_path, persisted_content);
+                                this.reopen_external_current_note(cx);
                                 this.status = SharedString::from("Ready");
                             }
                             Err(err) => {
@@ -6491,7 +8276,7 @@ impl XnoteWindow {
             .map(|d| d.insert_after)
             .unwrap_or(false);
 
-        if self.reorder_folder(target_folder, &dragged.path, target_path, insert_after) {
+        if self.reorder_folder(target_folder, &dragged.path, target_path, insert_after, cx) {
             self.schedule_save_folder_order(target_folder, cx);
         }
 
@@ -6504,6 +8289,7 @@ impl XnoteWindow {
         dragged_path: &str,
         target_path: &str,
         insert_after: bool,
+        cx: &mut Context<Self>,
     ) -> bool {
         let Some(order) = self.folder_notes.get_mut(folder) else {
             return false;
@@ -6532,7 +8318,7 @@ impl XnoteWindow {
         }
         order.insert(to_ix, moved);
 
-        self.rebuild_explorer_rows();
+        self.rebuild_explorer_rows(cx);
         true
     }
 
@@ -6701,7 +8487,8 @@ impl NoteEditorLayout {
                     .lines()
                     .count()
                     .max(1);
-                let gutter_digits = line_number_digits(max_line_number);
+                let gutter_digits =
+                    line_number_digits(max_line_number).max(EDITOR_GUTTER_STABLE_DIGITS_MAX_9999);
                 let gutter_width = px(editor_gutter_width_for_digits(gutter_digits));
                 let text_x_offset = editor_text_x_offset(gutter_width);
                 let text_wrap_width =
@@ -6781,7 +8568,9 @@ impl NoteEditorLayout {
                         .map(|span| span.kind)
                     {
                         run.color = match kind {
-                            EditorHighlightKind::HeadingMarker => rgb(ui_theme.syntax_heading_marker),
+                            EditorHighlightKind::HeadingMarker => {
+                                rgb(ui_theme.syntax_heading_marker)
+                            }
                             EditorHighlightKind::HeadingText => rgb(ui_theme.syntax_heading_text),
                             EditorHighlightKind::CodeFence => rgb(ui_theme.syntax_code_fence),
                             EditorHighlightKind::CodeText => rgb(ui_theme.syntax_code_text),
@@ -6796,10 +8585,13 @@ impl NoteEditorLayout {
                     runs.push(run);
                 }
 
-                let lines = match window
-                    .text_system()
-                    .shape_text(text.clone(), font_size, &runs, text_wrap_width, None)
-                {
+                let lines = match window.text_system().shape_text(
+                    text.clone(),
+                    font_size,
+                    &runs,
+                    text_wrap_width,
+                    None,
+                ) {
                     Ok(lines) => lines.into_iter().collect::<Vec<_>>(),
                     Err(_) => Vec::new(),
                 };
@@ -6816,17 +8608,20 @@ impl NoteEditorLayout {
 
                 let logical_line_numbers = compute_wrapped_line_numbers(&text, &lines);
 
-                element_state.state.borrow_mut().replace(NoteEditorLayoutInner {
-                    lines,
-                    logical_line_numbers,
-                    gutter_width,
-                    gutter_digits,
-                    ui_theme,
-                    line_height,
-                    wrap_width,
-                    size: Some(size),
-                    bounds: None,
-                });
+                element_state
+                    .state
+                    .borrow_mut()
+                    .replace(NoteEditorLayoutInner {
+                        lines,
+                        logical_line_numbers,
+                        gutter_width,
+                        gutter_digits,
+                        ui_theme,
+                        line_height,
+                        wrap_width,
+                        size: Some(size),
+                        bounds: None,
+                    });
 
                 size
             }
@@ -6930,7 +8725,6 @@ impl NoteEditorLayout {
             point(right + px(2.0), bottom),
         ))
     }
-
 }
 
 struct NoteEditorElement {
@@ -7047,7 +8841,11 @@ impl Element for NoteEditorElement {
 
             let mut y = bounds.origin.y;
             for (line_ix, line) in inner.lines.iter().enumerate() {
-                let line_number = inner.logical_line_numbers.get(line_ix).copied().unwrap_or(1);
+                let line_number = inner
+                    .logical_line_numbers
+                    .get(line_ix)
+                    .copied()
+                    .unwrap_or(1);
                 if let Some(line_text) = line_number_label(
                     line_number,
                     inner.gutter_digits,
@@ -7282,9 +9080,32 @@ impl Render for DragPreview {
     }
 }
 
+struct TooltipPreview {
+    label: SharedString,
+    ui_theme: UiTheme,
+}
+
+impl Render for TooltipPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(rgb(self.ui_theme.surface_bg))
+            .border_1()
+            .border_color(rgb(self.ui_theme.border))
+            .text_color(rgb(self.ui_theme.text_primary))
+            .font_family("IBM Plex Mono")
+            .text_size(px(11.))
+            .child(self.label.clone())
+    }
+}
+
 impl Render for XnoteWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_theme = UiTheme::from_settings(self.settings_theme, self.settings_accent);
+
+        self.schedule_non_active_group_preview_loads(cx);
 
         if self.vault_prompt_open && self.vault_prompt_needs_focus {
             window.focus(&self.vault_prompt_focus_handle);
@@ -7421,8 +9242,8 @@ impl Render for XnoteWindow {
         let rail_w = px(48.);
         let splitter_w = px(6.);
         let editor_min_w = px(320.);
-        let panel_min_w = px(180.);
-        let workspace_min_w = px(220.);
+        let panel_min_w = px(PANEL_SHELL_MIN_WIDTH);
+        let workspace_min_w = px(WORKSPACE_MIN_WIDTH);
 
         let window_w = window.bounds().size.width;
         let (panel_shell_state, workspace_state) = self.effective_sidebar_layout(window_w);
@@ -7481,6 +9302,8 @@ impl Render for XnoteWindow {
             self.workspace_saved_width = workspace_width;
         }
 
+        self.schedule_window_layout_persist_if_changed(window, cx);
+
         let explorer_panel =
             div()
                 .w(panel_shell_width)
@@ -7498,21 +9321,30 @@ impl Render for XnoteWindow {
                         .flex()
                         .items_center()
                         .bg(rgb(ui_theme.panel_bg))
-                        .gap(px(10.))
+                        .gap(px(6.))
+                        .overflow_hidden()
                         .child(
                             div()
-                                .font_family("IBM Plex Mono")
-                                .text_size(px(10.))
-                                .font_weight(FontWeight(900.))
-                                .text_color(rgb(ui_theme.text_secondary))
-                                .child("EXPLORER"),
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(10.))
+                                        .font_weight(FontWeight(900.))
+                                        .text_color(rgb(ui_theme.text_secondary))
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child("EXPLORER"),
+                                ),
                         )
-                        .child(div().flex_1())
                         .child(
                             div()
                                 .id("panel_shell.collapse.explorer")
-                                .h(px(24.))
-                                .w(px(24.))
+                                .h(px(EXPLORER_HEADER_ACTION_SIZE))
+                                .w(px(EXPLORER_HEADER_ACTION_SIZE))
+                                .flex_shrink_0()
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -7521,18 +9353,23 @@ impl Render for XnoteWindow {
                                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                     this.set_panel_shell_collapsed(true, cx);
                                 }))
-                                .child(ui_icon(ICON_PANEL_LEFT_CLOSE, 16., ui_theme.text_muted)),
+                                .child(ui_icon(
+                                    ICON_PANEL_LEFT_CLOSE,
+                                    EXPLORER_HEADER_ICON_SIZE,
+                                    ui_theme.text_muted,
+                                )),
                         )
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .flex()
                                 .items_center()
-                                .gap(px(10.))
+                                .gap(px(4.))
                                 .child(
                                     div()
                                         .id("explorer.new_file")
-                                        .h(px(24.))
-                                        .w(px(24.))
+                                        .h(px(EXPLORER_HEADER_ACTION_SIZE))
+                                        .w(px(EXPLORER_HEADER_ACTION_SIZE))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -7543,13 +9380,17 @@ impl Render for XnoteWindow {
                                                 this.create_new_note(cx);
                                             },
                                         ))
-                                        .child(ui_icon(ICON_FILE_PLUS, 16., ui_theme.text_muted)),
+                                        .child(ui_icon(
+                                            ICON_FILE_PLUS,
+                                            EXPLORER_HEADER_ICON_SIZE,
+                                            ui_theme.text_muted,
+                                        )),
                                 )
                                 .child(
                                     div()
                                         .id("explorer.new_folder")
-                                        .h(px(24.))
-                                        .w(px(24.))
+                                        .h(px(EXPLORER_HEADER_ACTION_SIZE))
+                                        .w(px(EXPLORER_HEADER_ACTION_SIZE))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -7560,13 +9401,17 @@ impl Render for XnoteWindow {
                                                 this.create_new_folder(cx);
                                             },
                                         ))
-                                        .child(ui_icon(ICON_FOLDER_PLUS, 16., ui_theme.text_muted)),
+                                        .child(ui_icon(
+                                            ICON_FOLDER_PLUS,
+                                            EXPLORER_HEADER_ICON_SIZE,
+                                            ui_theme.text_muted,
+                                        )),
                                 )
                                 .child(
                                     div()
                                         .id("explorer.refresh")
-                                        .h(px(24.))
-                                        .w(px(24.))
+                                        .h(px(EXPLORER_HEADER_ACTION_SIZE))
+                                        .w(px(EXPLORER_HEADER_ACTION_SIZE))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -7577,7 +9422,11 @@ impl Render for XnoteWindow {
                                                 this.rescan_vault(cx);
                                             },
                                         ))
-                                        .child(ui_icon(ICON_REFRESH_CW, 16., ui_theme.text_muted)),
+                                        .child(ui_icon(
+                                            ICON_REFRESH_CW,
+                                            EXPLORER_HEADER_ICON_SIZE,
+                                            ui_theme.text_muted,
+                                        )),
                                 ),
                         ),
                 )
@@ -7618,7 +9467,11 @@ impl Render for XnoteWindow {
                                 .child(SharedString::from(if self.explorer_filter.is_empty() {
                                     "Filter files…".to_string()
                                 } else {
-                                    format!("Filter: {}", self.explorer_filter)
+                                    format!(
+                                        "Filter: {} ({})",
+                                        self.explorer_filter,
+                                        self.explorer_rows_filtered.len()
+                                    )
                                 })),
                         ),
                 )
@@ -7633,6 +9486,7 @@ impl Render for XnoteWindow {
                         .flex_1()
                         .min_h_0()
                         .w_full()
+                        .overflow_hidden()
                         .bg(rgb(ui_theme.surface_alt_bg))
                         .py(px(10.))
                         .on_mouse_up(
@@ -7640,7 +9494,10 @@ impl Render for XnoteWindow {
                             cx.listener(|this, _ev, _window, cx| this.clear_drag_over(cx)),
                         )
                         .child(
-                            uniform_list(
+                            div()
+                                .w_full()
+                                .h_full()
+                                .child(uniform_list(
                                 "explorer",
                                 if self.is_filtering() {
                                     self.explorer_rows_filtered.len()
@@ -7679,6 +9536,7 @@ impl Render for XnoteWindow {
                                                     == Some(path.as_str());
                                                 let selected_path = path.clone();
                                                 let display_name = path.clone();
+                                                let tooltip_text = path.clone();
 
                                                 div()
                         .id(ElementId::Name(SharedString::from(format!("note:{path}"))))
@@ -7692,6 +9550,16 @@ impl Render for XnoteWindow {
                         .cursor_pointer()
                         .when(is_selected, |this| this.bg(rgb(ui_theme.accent_soft)))
                         .when(!is_selected, |this| this.hover(|this| this.bg(rgb(ui_theme.interactive_hover))))
+                        .tooltip({
+                            let tooltip_text = tooltip_text.clone();
+                            let tooltip_theme = ui_theme;
+                            move |_window, cx| {
+                                AnyView::from(cx.new(|_| TooltipPreview {
+                                    label: tooltip_text.clone().into(),
+                                    ui_theme: tooltip_theme,
+                                }))
+                            }
+                        })
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                           this.open_note(selected_path.clone(), cx);
                         }))
@@ -7742,6 +9610,7 @@ impl Render for XnoteWindow {
                                                     ICON_CHEVRON_RIGHT
                                                 };
                                                 let folder = String::new();
+                                                let tooltip_text = root_name.clone();
                                                 div()
                         .id(ElementId::Name(SharedString::from("explorer.vault")))
                         .h(px(22.))
@@ -7760,6 +9629,16 @@ impl Render for XnoteWindow {
                           |this| this.bg(rgb(ui_theme.accent_soft)),
                         )
                         .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                        .tooltip({
+                            let tooltip_text = tooltip_text.clone();
+                            let tooltip_theme = ui_theme;
+                            move |_window, cx| {
+                                AnyView::from(cx.new(|_| TooltipPreview {
+                                    label: tooltip_text.clone().into(),
+                                    ui_theme: tooltip_theme,
+                                }))
+                            }
+                        })
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                           this.selected_explorer_folder = Some(String::new());
                           this.selected_note = None;
@@ -7796,6 +9675,16 @@ impl Render for XnoteWindow {
                                                 .overflow_hidden()
                                                 .cursor_pointer()
                                                 .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                                                .tooltip({
+                                                    let tooltip_text = text.clone();
+                                                    let tooltip_theme = ui_theme;
+                                                    move |_window, cx| {
+                                                        AnyView::from(cx.new(|_| TooltipPreview {
+                                                            label: tooltip_text.clone(),
+                                                            ui_theme: tooltip_theme,
+                                                        }))
+                                                    }
+                                                })
                                                 .on_click(cx.listener(
                                                     |this, _ev: &ClickEvent, _window, cx| {
                                                         this.open_vault_prompt(cx);
@@ -7849,6 +9738,7 @@ impl Render for XnoteWindow {
                                                 let indent_el =
                                                     tree_indent_guides(*depth, line_mask);
                                                 let folder_path = folder.clone();
+                                                let tooltip_text = folder.clone();
                                                 let show_child_stem = *expanded && *has_children;
 
                                                 div()
@@ -7866,6 +9756,16 @@ impl Render for XnoteWindow {
                             |this| this.bg(rgb(ui_theme.accent_soft)),
                         )
                         .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                        .tooltip({
+                            let tooltip_text = tooltip_text.clone();
+                            let tooltip_theme = ui_theme;
+                            move |_window, cx| {
+                                AnyView::from(cx.new(|_| TooltipPreview {
+                                    label: tooltip_text.clone().into(),
+                                    ui_theme: tooltip_theme,
+                                }))
+                            }
+                        })
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                           this.selected_explorer_folder = Some(folder_path.clone());
                           this.selected_note = None;
@@ -7940,6 +9840,7 @@ impl Render for XnoteWindow {
                                                 let target_folder = folder.clone();
                                                 let target_path = path.clone();
                                                 let selected_path = path.clone();
+                                                let tooltip_text = path.clone();
                                                 let display_name = if is_filtering {
                                                     path.clone()
                                                 } else {
@@ -7982,6 +9883,16 @@ impl Render for XnoteWindow {
                             .bg(rgb(ui_theme.accent_soft))
                             .border_1()
                             .border_color(rgb(ui_theme.accent))
+                        })
+                        .tooltip({
+                            let tooltip_text = tooltip_text.clone();
+                            let tooltip_theme = ui_theme;
+                            move |_window, cx| {
+                                AnyView::from(cx.new(|_| TooltipPreview {
+                                    label: tooltip_text.clone().into(),
+                                    ui_theme: tooltip_theme,
+                                }))
+                            }
                         })
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                           this.open_note(selected_path.clone(), cx);
@@ -8061,14 +9972,25 @@ impl Render for XnoteWindow {
                                         })
                                         .collect::<Vec<_>>()
                                 }),
-                            )
-                            .h_full(),
+                                        )
+                                        .h_full()),
                         ),
                 );
 
         let search_vault_label = match &self.vault_state {
             VaultState::Opened { root_name, .. } => root_name.clone(),
             _ => SharedString::from("None"),
+        };
+        let search_panel_hint = if self.search_query.trim().is_empty() {
+            if let Some(recent) = self.recent_panel_search_queries.front() {
+                SharedString::from(format!(
+                    "Type to search… · Esc clear/close · Enter open · Recent: {recent}"
+                ))
+            } else {
+                SharedString::from("Type to search… · Esc clear/close · Enter open")
+            }
+        } else {
+            SharedString::from("Esc clear/close · ↑/↓ navigate · Enter open")
         };
 
         let search_panel = div()
@@ -8194,7 +10116,15 @@ impl Render for XnoteWindow {
                   .font_weight(FontWeight(900.))
                   .text_color(rgb(ui_theme.text_muted))
                   .child("RESULTS"),
-              ),
+              )
+              .child(
+                div()
+                  .font_family("IBM Plex Mono")
+                  .text_size(px(10.))
+                  .font_weight(FontWeight(650.))
+                  .text_color(rgb(ui_theme.text_muted))
+                  .child(search_panel_hint),
+              )
           )
           .child(
             div()
@@ -8208,6 +10138,10 @@ impl Render for XnoteWindow {
                   self.search_results.len().max(1),
                   cx.processor(move |this, range: std::ops::Range<usize>, _window, list_cx| {
                     if this.search_query.trim().is_empty() {
+                      let recent_hint = this
+                        .recent_panel_search_queries
+                        .front()
+                        .map(|q| SharedString::from(format!("Recent: {q}")));
                       return range
                         .map(|ix| {
                           div()
@@ -8217,7 +10151,17 @@ impl Render for XnoteWindow {
                             .text_size(px(11.))
                             .font_weight(FontWeight(650.))
                             .text_color(rgb(ui_theme.text_muted))
-                            .child(if ix == 0 { "Type to search…" } else { "" })
+                            .child(
+                              if ix == 0 {
+                                SharedString::from("Type to search…")
+                              } else if ix == 1 {
+                                recent_hint
+                                  .clone()
+                                  .unwrap_or_else(|| SharedString::from(""))
+                              } else {
+                                SharedString::from("")
+                              }
+                            )
                         })
                         .collect::<Vec<_>>();
                     }
@@ -8249,9 +10193,15 @@ impl Render for XnoteWindow {
                         let selected = ix == this.search_selected;
 
                         match row {
-                          SearchRow::File { path, match_count } => {
-                            let path_for_click = path.clone();
-                            let label = SharedString::from(format!("{path} ({match_count})"));
+                          SearchRow::File {
+                            path,
+                            match_count,
+                            path_highlights,
+                          } => {
+                            let row_path = path.clone();
+                            let toggle_path = path.clone();
+                            let is_collapsed = this.search_collapsed_paths.contains(path);
+                            let count_label = SharedString::from(format!("{match_count}"));
 
                             div()
                               .id(ElementId::Name(SharedString::from(format!(
@@ -8266,26 +10216,68 @@ impl Render for XnoteWindow {
                               .when(!selected, |this| this.hover(|this| this.bg(rgb(ui_theme.interactive_hover))))
                               .on_click(list_cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                                 this.search_selected = ix;
-                                this.open_note(path_for_click.clone(), cx);
+                                this.toggle_search_group_collapsed(&toggle_path);
+                                cx.notify();
                               }))
+                              .tooltip({
+                                let tooltip_path = row_path.clone();
+                                let tooltip_theme = ui_theme;
+                                move |_window, cx| {
+                                  AnyView::from(cx.new(|_| TooltipPreview {
+                                    label: tooltip_path.clone().into(),
+                                    ui_theme: tooltip_theme,
+                                  }))
+                                }
+                              })
+                              .child(ui_icon(
+                                if is_collapsed {
+                                  ICON_CHEVRON_RIGHT
+                                } else {
+                                  ICON_CHEVRON_DOWN
+                                },
+                                14.,
+                                ui_theme.text_muted,
+                              ))
                               .child(
                                 div()
                                   .min_w_0()
                                   .flex_1()
                                   .overflow_hidden()
+                                  .flex()
+                                  .items_center()
                                   .font_family("IBM Plex Mono")
                                   .text_size(px(11.))
                                   .font_weight(FontWeight(900.))
-                                  .text_color(rgb(ui_theme.text_primary))
                                   .whitespace_nowrap()
                                   .text_ellipsis()
-                                  .child(label),
+                                  .children(render_highlighted_segments(
+                                    path,
+                                    path_highlights,
+                                    ui_theme.text_primary,
+                                    ui_theme.accent,
+                                    FontWeight(900.),
+                                    FontWeight(950.),
+                                  )),
+                              )
+                              .child(
+                                div()
+                                  .font_family("IBM Plex Mono")
+                                  .text_size(px(10.))
+                                  .font_weight(FontWeight(700.))
+                                  .text_color(rgb(ui_theme.text_muted))
+                                  .child(count_label),
                               )
                           }
-                          SearchRow::Match { path, line, preview } => {
+                          SearchRow::Match {
+                            path,
+                            line,
+                            preview,
+                            preview_highlights,
+                          } => {
+                            let row_path = path.clone();
                             let path_for_click = path.clone();
                             let line_for_click = *line;
-                            let label = SharedString::from(format!("{line}: {preview}"));
+                            let line_label = SharedString::from(format!("{line}"));
 
                             div()
                               .id(ElementId::Name(SharedString::from(format!(
@@ -8302,18 +10294,48 @@ impl Render for XnoteWindow {
                                 this.search_selected = ix;
                                 this.open_note_at_line(path_for_click.clone(), line_for_click, cx);
                               }))
+                              .tooltip({
+                                let tooltip_text = SharedString::from(format!(
+                                  "{}:{} {}",
+                                  row_path,
+                                  line,
+                                  preview
+                                ));
+                                let tooltip_theme = ui_theme;
+                                move |_window, cx| {
+                                  AnyView::from(cx.new(|_| TooltipPreview {
+                                    label: tooltip_text.clone(),
+                                    ui_theme: tooltip_theme,
+                                  }))
+                                }
+                              })
+                              .child(
+                                div()
+                                  .font_family("IBM Plex Mono")
+                                  .text_size(px(10.))
+                                  .font_weight(FontWeight(700.))
+                                  .text_color(rgb(ui_theme.text_muted))
+                                  .child(line_label),
+                              )
                               .child(
                                 div()
                                   .min_w_0()
                                   .flex_1()
                                   .overflow_hidden()
+                                  .flex()
+                                  .items_center()
                                   .font_family("IBM Plex Mono")
                                   .text_size(px(10.))
-                                  .font_weight(FontWeight(650.))
-                                  .text_color(rgb(ui_theme.text_secondary))
                                   .whitespace_nowrap()
                                   .text_ellipsis()
-                                  .child(label),
+                                  .children(render_highlighted_segments(
+                                    preview,
+                                    preview_highlights,
+                                    ui_theme.text_secondary,
+                                    ui_theme.accent,
+                                    FontWeight(650.),
+                                    FontWeight(850.),
+                                  )),
                               )
                           }
                         }
@@ -8986,6 +11008,11 @@ impl Render for XnoteWindow {
             .min_w_0()
             .overflow_x_hidden();
 
+        tabs_bar = tabs_bar.on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _ev, _window, cx| this.clear_tab_drag_over(cx)),
+        );
+
         let show_panel_shell_toggle =
             self.panel_shell_collapsed || self.panel_shell_tab_toggle_exiting;
         let show_workspace_toggle = self.workspace_collapsed || self.workspace_tab_toggle_exiting;
@@ -9060,6 +11087,25 @@ impl Render for XnoteWindow {
             let path = path.clone();
             let label = file_name(&path);
             let close_path = path.clone();
+            let pin_path = path.clone();
+            let dragged_tab = DraggedEditorTab { path: path.clone() };
+            let is_pinned = self.pinned_editors.contains(&path);
+            let drop_compare_path = path.clone();
+            let tab_path_for_drop = path.clone();
+            let tab_path_for_drag_move = path.clone();
+            let tab_path_for_drop_handler = path.clone();
+            let tab_path_for_click = path.clone();
+
+            let is_drop_target = self
+                .tab_drag_over
+                .as_ref()
+                .is_some_and(|meta| meta.target_path == tab_path_for_drop);
+            let drop_insert_after = self
+                .tab_drag_over
+                .as_ref()
+                .filter(|meta| meta.target_path == tab_path_for_drop)
+                .map(|meta| meta.insert_after)
+                .unwrap_or(false);
 
             let close_button = div()
                 .id(ElementId::Name(SharedString::from(format!(
@@ -9078,9 +11124,38 @@ impl Render for XnoteWindow {
                 }))
                 .child(ui_icon(ICON_X, 14., close_color));
 
+            let pin_button = div()
+                .id(ElementId::Name(SharedString::from(format!(
+                    "tab.pin:{pin_path}"
+                ))))
+                .h(px(28.))
+                .w(px(18.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                    this.toggle_pin_editor(&pin_path, cx);
+                }))
+                .child(ui_icon(
+                    ICON_BOOKMARK,
+                    12.,
+                    if is_pinned {
+                        ui_theme.accent
+                    } else {
+                        ui_theme.text_subtle
+                    },
+                ));
+
+            let tab_group_id = self
+                .group_id_for_note_path(&path)
+                .unwrap_or(self.active_editor_group_id);
+
             tabs_bar = tabs_bar.child(
                 div()
                     .id(ElementId::Name(SharedString::from(format!("tab:{path}"))))
+                    .relative()
                     .h(px(28.))
                     .flex()
                     .items_center()
@@ -9097,9 +11172,61 @@ impl Render for XnoteWindow {
                     .when(!is_active, |this| {
                         this.hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
                     })
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.open_note(path.clone(), cx);
+                    .on_drag(dragged_tab, |dragged, _offset, _window, cx| {
+                        cx.new(|_| DragPreview {
+                            label: SharedString::from(dragged.path.clone()),
+                        })
+                    })
+                    .on_drag_move::<DraggedEditorTab>(cx.listener({
+                        let target_path = tab_path_for_drag_move;
+                        move |this, ev: &DragMoveEvent<DraggedEditorTab>, _window, cx| {
+                            let Some(dragged) =
+                                ev.dragged_item().downcast_ref::<DraggedEditorTab>()
+                            else {
+                                return;
+                            };
+                            if dragged.path == target_path {
+                                return;
+                            }
+                            let mid_x = ev.bounds.origin.x + ev.bounds.size.width * 0.5;
+                            let insert_after = ev.event.position.x >= mid_x;
+                            this.set_tab_drag_over(target_path.clone(), insert_after, cx);
+                        }
                     }))
+                    .can_drop(move |dragged, _window, _cx| {
+                        dragged
+                            .downcast_ref::<DraggedEditorTab>()
+                            .is_some_and(|tab| tab.path != drop_compare_path)
+                    })
+                    .on_drop::<DraggedEditorTab>(cx.listener(
+                        move |this, dragged: &DraggedEditorTab, _window, cx| {
+                            this.handle_tab_drop(
+                                dragged,
+                                &tab_path_for_drop_handler,
+                                tab_group_id,
+                                cx,
+                            );
+                        },
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev, _window, cx| this.clear_tab_drag_over(cx)),
+                    )
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.open_note(tab_path_for_click.clone(), cx);
+                    }))
+                    .when(is_drop_target, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(2.))
+                                .bg(rgb(ui_theme.accent))
+                                .when(drop_insert_after, |this| this.right(px(0.)))
+                                .when(!drop_insert_after, |this| this.left(px(0.))),
+                        )
+                    })
                     .child(ui_icon(ICON_FILE_TEXT, 14., icon_color))
                     .child(
                         div()
@@ -9114,11 +11241,12 @@ impl Render for XnoteWindow {
                             .text_ellipsis()
                             .child(label),
                     )
+                    .child(pin_button)
                     .child(close_button),
             );
         }
 
-        let split_active = self.editor_view_mode == EditorViewMode::Split;
+        let split_active = self.editor_groups.len() > 1;
         let split_action = div()
             .id("editor.action.split")
             .h(px(28.))
@@ -9134,7 +11262,7 @@ impl Render for XnoteWindow {
             })
             .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                this.toggle_editor_split_mode(cx);
+                this.split_active_editor_group(cx);
             }))
             .child(ui_icon(
                 ICON_COLUMNS_2,
@@ -9145,6 +11273,124 @@ impl Render for XnoteWindow {
                     ui_theme.text_muted
                 },
             ));
+
+        let split_dir_action = if split_active {
+            Some(
+                div()
+                    .id("editor.action.split_direction")
+                    .h(px(28.))
+                    .w(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .bg(rgb(ui_theme.panel_bg))
+                    .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.editor_split_direction =
+                            if this.editor_split_direction == EditorSplitDirection::Right {
+                                EditorSplitDirection::Down
+                            } else {
+                                EditorSplitDirection::Right
+                            };
+                        this.remember_current_tab_view_state();
+                        cx.notify();
+                    }))
+                    .child(ui_icon(
+                        if self.editor_split_direction == EditorSplitDirection::Right {
+                            ICON_PANEL_RIGHT_OPEN
+                        } else {
+                            ICON_PANEL_LEFT_OPEN
+                        },
+                        16.,
+                        ui_theme.text_muted,
+                    )),
+            )
+        } else {
+            None
+        };
+
+        let close_group_action = if split_active {
+            Some(
+                div()
+                    .id("editor.action.close_group")
+                    .h(px(28.))
+                    .w(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .bg(rgb(ui_theme.panel_bg))
+                    .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        let group_id = this.active_editor_group_id;
+                        this.close_editor_group(group_id, cx);
+                    }))
+                    .child(ui_icon(ICON_X, 16., ui_theme.text_muted)),
+            )
+        } else {
+            None
+        };
+
+        let close_other_groups_action = if split_active {
+            Some(
+                div()
+                    .id("editor.action.close_other_groups")
+                    .h(px(28.))
+                    .w(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .bg(rgb(ui_theme.panel_bg))
+                    .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.close_other_editor_groups(cx);
+                    }))
+                    .tooltip({
+                        let tooltip_theme = ui_theme;
+                        move |_window, cx| {
+                            AnyView::from(cx.new(|_| TooltipPreview {
+                                label: SharedString::from("Close Other Groups"),
+                                ui_theme: tooltip_theme,
+                            }))
+                        }
+                    })
+                    .child(ui_icon(ICON_SQUARE, 14., ui_theme.text_muted)),
+            )
+        } else {
+            None
+        };
+
+        let close_groups_right_action = if split_active {
+            Some(
+                div()
+                    .id("editor.action.close_groups_right")
+                    .h(px(28.))
+                    .w(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .bg(rgb(ui_theme.panel_bg))
+                    .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.close_groups_to_right(cx);
+                    }))
+                    .tooltip({
+                        let tooltip_theme = ui_theme;
+                        move |_window, cx| {
+                            AnyView::from(cx.new(|_| TooltipPreview {
+                                label: SharedString::from("Close Groups to Right"),
+                                ui_theme: tooltip_theme,
+                            }))
+                        }
+                    })
+                    .child(ui_icon(ICON_CHEVRON_RIGHT, 14., ui_theme.text_muted)),
+            )
+        } else {
+            None
+        };
 
         tabs_bar = tabs_bar
             .child(div().flex_1())
@@ -9158,6 +11404,10 @@ impl Render for XnoteWindow {
                 this.export_open_note(cx);
             }))
             .child(split_action)
+            .when_some(split_dir_action, |this, action| this.child(action))
+            .when_some(close_other_groups_action, |this, action| this.child(action))
+            .when_some(close_groups_right_action, |this, action| this.child(action))
+            .when_some(close_group_action, |this, action| this.child(action))
             .child(div().w(px(4.)));
 
         let mode_toggle = |id: &'static str,
@@ -9241,7 +11491,7 @@ impl Render for XnoteWindow {
                 .h(px(28.))
                 .w_full()
                 .bg(rgb(ui_theme.surface_bg))
-                .pl(px(18.))
+                .pl(px(EDITOR_SURFACE_LEFT_PADDING))
                 .pr(px(4.))
                 .flex()
                 .items_center()
@@ -9286,7 +11536,8 @@ impl Render for XnoteWindow {
             .h(px(64.))
             .w_full()
             .bg(rgb(ui_theme.surface_bg))
-            .px(px(18.))
+            .pl(px(EDITOR_SURFACE_LEFT_PADDING))
+            .pr(px(EDITOR_SURFACE_RIGHT_PADDING))
             .py(px(12.))
             .flex()
             .items_center()
@@ -9353,21 +11604,22 @@ impl Render for XnoteWindow {
                     ),
             );
 
-        let editor_pane = |id: &'static str, interactive: bool| {
+        let editor_pane = |id: SharedString, interactive: bool, content: String| {
             let mut pane = div()
                 .id(id)
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
                 .overflow_y_scroll()
-                .px(px(18.))
+                .pl(px(EDITOR_SURFACE_LEFT_PADDING))
+                .pr(px(EDITOR_SURFACE_RIGHT_PADDING))
                 .py(px(10.))
                 .font_family("IBM Plex Mono")
                 .text_size(px(13.))
                 .text_color(rgb(ui_theme.text_primary))
                 .bg(rgb(ui_theme.surface_bg));
 
-            if self.open_note_path.is_some() && !self.open_note_loading {
+            if !content.is_empty() {
                 if interactive {
                     pane = pane
                         .track_focus(&self.editor_focus_handle)
@@ -9380,8 +11632,42 @@ impl Render for XnoteWindow {
                         .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_editor_mouse_up))
                         .on_mouse_move(cx.listener(Self::on_editor_mouse_move));
                 }
-                pane.child(NoteEditorElement { view: cx.entity() })
-                    .into_any_element()
+                if interactive {
+                    pane.child(NoteEditorElement { view: cx.entity() })
+                        .into_any_element()
+                } else {
+                    let mut preview = div()
+                        .id("editor.group.preview.content")
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.));
+                    for line in content.lines() {
+                        preview = preview.child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(450.))
+                                .text_color(rgb(ui_theme.text_secondary))
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(SharedString::from(line.to_string())),
+                        );
+                    }
+
+                    let preview_content = if content.trim().is_empty() {
+                        div()
+                            .font_family("IBM Plex Mono")
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(650.))
+                            .text_color(rgb(ui_theme.text_muted))
+                            .child("No cached content yet (click to focus)")
+                            .into_any_element()
+                    } else {
+                        preview.into_any_element()
+                    };
+
+                    pane.child(preview_content).into_any_element()
+                }
             } else {
                 pane.font_family("IBM Plex Mono")
                     .text_size(px(11.))
@@ -9399,14 +11685,16 @@ impl Render for XnoteWindow {
                 .min_h_0()
                 .min_w_0()
                 .overflow_y_scroll()
-                .px(px(18.))
+                .pl(px(EDITOR_SURFACE_LEFT_PADDING))
+                .pr(px(EDITOR_SURFACE_RIGHT_PADDING))
                 .py(px(10.))
                 .bg(rgb(ui_theme.surface_bg))
                 .flex()
                 .flex_col()
                 .gap(px(10.));
 
-            if self.markdown_preview.headings.is_empty() && self.markdown_preview.blocks.is_empty() {
+            if self.markdown_preview.headings.is_empty() && self.markdown_preview.blocks.is_empty()
+            {
                 pane = pane.child(
                     div()
                         .font_family("IBM Plex Mono")
@@ -9452,7 +11740,8 @@ impl Render for XnoteWindow {
 
                 let mut blocks = div().flex().flex_col().gap(px(8.));
                 for block in self.markdown_preview.blocks.iter().take(240) {
-                    let (font_family, text_size, font_weight, text_color, prefix) = match block.kind {
+                    let (font_family, text_size, font_weight, text_color, prefix) = match block.kind
+                    {
                         MarkdownPreviewBlockKind::Heading(level) => (
                             "Inter",
                             px((20_i32 - (level as i32 * 2)).max(12) as f32),
@@ -9460,9 +11749,13 @@ impl Render for XnoteWindow {
                             ui_theme.text_primary,
                             "",
                         ),
-                        MarkdownPreviewBlockKind::Paragraph => {
-                            ("Inter", px(13.), FontWeight(650.), ui_theme.text_secondary, "")
-                        }
+                        MarkdownPreviewBlockKind::Paragraph => (
+                            "Inter",
+                            px(13.),
+                            FontWeight(650.),
+                            ui_theme.text_secondary,
+                            "",
+                        ),
                         MarkdownPreviewBlockKind::CodeFence => (
                             "IBM Plex Mono",
                             px(12.),
@@ -9502,21 +11795,141 @@ impl Render for XnoteWindow {
             pane.into_any_element()
         };
 
-        let editor_body = if self.editor_view_mode == EditorViewMode::Split {
-            div()
-                .id("editor.split")
+        let group_count = self.editor_groups.len().max(1);
+        let editor_body = {
+            let mut row = div()
+                .id("editor.groups")
                 .flex_1()
                 .min_h_0()
+                .w_full()
                 .flex()
-                .flex_row()
-                .child(editor_pane("editor.pane.left", true))
-                .child(div().w(px(1.)).h_full().bg(rgb(ui_theme.border)))
-                .child(preview_pane())
-                .into_any_element()
-        } else if self.editor_view_mode == EditorViewMode::Preview {
-            preview_pane()
-        } else {
-            editor_pane("editor.pane.single", true)
+                .flex_row();
+
+            let mut groups = self.editor_groups.clone();
+            if groups.is_empty() {
+                groups.push(EditorGroup {
+                    id: self.active_editor_group_id,
+                    note_path: self.open_note_path.clone(),
+                });
+            }
+
+            for (ix, group) in groups.iter().enumerate() {
+                let group_id = group.id;
+                let is_active_group = group_id == self.active_editor_group_id;
+                let group_note_path = group.note_path.clone();
+                let group_content = group_note_path
+                    .as_deref()
+                    .and_then(|path| self.note_content_cache.get(path))
+                    .cloned()
+                    .unwrap_or_default();
+                let group_content = if is_active_group {
+                    self.open_note_content.clone()
+                } else {
+                    full_preview_from_content(
+                        &group_content,
+                        INACTIVE_GROUP_PREVIEW_MAX_LINES,
+                        INACTIVE_GROUP_PREVIEW_MAX_LINE_CHARS,
+                    )
+                };
+                row = row.child(
+                    div()
+                        .id(ElementId::Name(SharedString::from(format!(
+                            "editor.group:{group_id}"
+                        ))))
+                        .flex_1()
+                        .min_w(px(EDITOR_SPLIT_MIN_PANE_WIDTH))
+                        .min_h_0()
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .border_l_1()
+                        .border_color(rgb(if ix == 0 {
+                            ui_theme.border
+                        } else if is_active_group {
+                            ui_theme.accent
+                        } else {
+                            ui_theme.border
+                        }))
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                            this.set_active_editor_group(group_id, cx);
+                        }))
+                        .child(
+                            div()
+                                .h(px(20.))
+                                .w_full()
+                                .px(px(8.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .bg(rgb(if is_active_group {
+                                    ui_theme.accent_soft
+                                } else {
+                                    ui_theme.surface_alt_bg
+                                }))
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(10.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(if is_active_group {
+                                            ui_theme.accent
+                                        } else {
+                                            ui_theme.text_muted
+                                        }))
+                                        .child(SharedString::from(format!("GROUP {}", ix + 1))),
+                                )
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(10.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(ui_theme.text_muted))
+                                        .child(
+                                            group
+                                                .note_path
+                                                .as_ref()
+                                                .map(|p| SharedString::from(file_name(p)))
+                                                .unwrap_or_else(|| SharedString::from("Empty")),
+                                        ),
+                                ),
+                        )
+                        .child(if is_active_group {
+                            if self.editor_view_mode == EditorViewMode::Preview {
+                                preview_pane()
+                            } else {
+                                editor_pane(
+                                    SharedString::from("editor.pane.active"),
+                                    true,
+                                    group_content,
+                                )
+                            }
+                        } else {
+                            editor_pane(
+                                SharedString::from(format!("editor.pane.group:{group_id}")),
+                                false,
+                                group_content,
+                            )
+                        }),
+                );
+
+                if ix + 1 < group_count {
+                    row = row.child(
+                        div()
+                            .id(ElementId::Name(SharedString::from(format!(
+                                "editor.group.separator:{}",
+                                ix + 1
+                            ))))
+                            .w(px(1.))
+                            .min_w(px(1.))
+                            .max_w(px(1.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .bg(rgb(ui_theme.border)),
+                    );
+                }
+            }
+
+            row.into_any_element()
         };
 
         let diagnostics_panel = {
@@ -9555,83 +11968,78 @@ impl Render for XnoteWindow {
                         .child("No diagnostics"),
                 );
             } else {
-                panel = panel.child(
-                    div().flex_1().min_h_0().child(uniform_list(
-                        "editor.diagnostics.list",
-                        self.markdown_diagnostics.len().min(128),
-                        cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
-                            range
-                                .map(|ix| {
-                                    let Some(diag) = this.markdown_diagnostics.get(ix) else {
-                                        return div()
-                                            .id(ElementId::named_usize(
-                                                "editor.diagnostics.missing",
-                                                ix,
-                                            ))
-                                            .h(px(18.));
-                                    };
+                panel = panel.child(div().flex_1().min_h_0().child(uniform_list(
+                    "editor.diagnostics.list",
+                    self.markdown_diagnostics.len().min(128),
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
+                        range
+                            .map(|ix| {
+                                let Some(diag) = this.markdown_diagnostics.get(ix) else {
+                                    return div()
+                                        .id(ElementId::named_usize(
+                                            "editor.diagnostics.missing",
+                                            ix,
+                                        ))
+                                        .h(px(18.));
+                                };
 
-                                    let ui_theme = UiTheme::from_settings(
-                                        this.settings_theme,
-                                        this.settings_accent,
-                                    );
-                                    let (label, color) = match diag.severity {
-                                        MarkdownDiagnosticSeverity::Info => {
-                                            ("INFO", ui_theme.diagnostic_info)
-                                        }
-                                        MarkdownDiagnosticSeverity::Warning => {
-                                            ("WARN", ui_theme.diagnostic_warning)
-                                        }
-                                        MarkdownDiagnosticSeverity::Error => {
-                                            ("ERROR", ui_theme.diagnostic_error)
-                                        }
-                                    };
+                                let ui_theme = UiTheme::from_settings(
+                                    this.settings_theme,
+                                    this.settings_accent,
+                                );
+                                let (label, color) = match diag.severity {
+                                    MarkdownDiagnosticSeverity::Info => {
+                                        ("INFO", ui_theme.diagnostic_info)
+                                    }
+                                    MarkdownDiagnosticSeverity::Warning => {
+                                        ("WARN", ui_theme.diagnostic_warning)
+                                    }
+                                    MarkdownDiagnosticSeverity::Error => {
+                                        ("ERROR", ui_theme.diagnostic_error)
+                                    }
+                                };
 
-                                    div()
-                                        .id(ElementId::named_usize("editor.diagnostics.row", ix))
-                                        .h(px(18.))
-                                        .w_full()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.))
-                                        .child(
-                                            div()
-                                                .w(px(44.))
-                                                .font_family("IBM Plex Mono")
-                                                .text_size(px(10.))
-                                                .font_weight(FontWeight(800.))
-                                                .text_color(rgb(color))
-                                                .child(label),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(px(56.))
-                                                .font_family("IBM Plex Mono")
-                                                .text_size(px(10.))
-                                                .font_weight(FontWeight(750.))
-                                                .text_color(rgb(ui_theme.text_muted))
-                                                .child(SharedString::from(format!(
-                                                    "Ln {}",
-                                                    diag.line
-                                                ))),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .font_family("IBM Plex Mono")
-                                                .text_size(px(10.))
-                                                .font_weight(FontWeight(650.))
-                                                .text_color(rgb(ui_theme.text_secondary))
-                                                .whitespace_nowrap()
-                                                .text_ellipsis()
-                                                .child(diag.message.clone()),
-                                        )
-                                })
-                                .collect()
-                        }),
-                    )),
-                );
+                                div()
+                                    .id(ElementId::named_usize("editor.diagnostics.row", ix))
+                                    .h(px(18.))
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .w(px(44.))
+                                            .font_family("IBM Plex Mono")
+                                            .text_size(px(10.))
+                                            .font_weight(FontWeight(800.))
+                                            .text_color(rgb(color))
+                                            .child(label),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(56.))
+                                            .font_family("IBM Plex Mono")
+                                            .text_size(px(10.))
+                                            .font_weight(FontWeight(750.))
+                                            .text_color(rgb(ui_theme.text_muted))
+                                            .child(SharedString::from(format!("Ln {}", diag.line))),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .font_family("IBM Plex Mono")
+                                            .text_size(px(10.))
+                                            .font_weight(FontWeight(650.))
+                                            .text_color(rgb(ui_theme.text_secondary))
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(diag.message.clone()),
+                                    )
+                            })
+                            .collect()
+                    }),
+                )));
             }
 
             panel
@@ -9665,6 +12073,14 @@ impl Render for XnoteWindow {
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.open_palette(PaletteMode::Commands, cx);
             }))
+                    .on_mouse_down(MouseButton::Right, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                        this.open_palette(PaletteMode::QuickOpen, cx);
+                    }))
+                    .on_mouse_down(MouseButton::Middle, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                        this.open_palette(PaletteMode::Search, cx);
+                        this.panel_mode = PanelMode::Search;
+                        cx.notify();
+                    }))
             .flex()
             .flex_col()
             .justify_center()
@@ -9682,7 +12098,7 @@ impl Render for XnoteWindow {
                             .text_size(px(11.))
                             .font_weight(FontWeight(650.))
                             .text_color(rgb(ui_theme.text_muted))
-                            .child("Search / Commands (Ctrl+K)"),
+                            .child("Commands (Ctrl+K) · Quick Open (Ctrl+P) · Search (Ctrl+F in palette)"),
                     ),
             )
             .child(div().h(px(2.)).w_full().bg(rgb(ui_theme.accent_soft)));
@@ -9786,6 +12202,11 @@ impl Render for XnoteWindow {
 
         let (sync_status, sync_status_dot_color) = if self.open_note_loading {
             (SharedString::from("Loading"), ui_theme.status_loading)
+        } else if self.pending_external_note_reload.is_some() {
+            (
+                SharedString::from("External Pending"),
+                ui_theme.status_loading,
+            )
         } else if self.open_note_dirty {
             (SharedString::from("Unsaved"), ui_theme.status_dirty)
         } else {
@@ -10076,14 +12497,14 @@ impl Render for XnoteWindow {
                     .right(px(0.))
                     .bg(rgba(0x00000000))
                     .cursor_col_resize()
-                    .on_mouse_move(cx.listener(Self::on_splitter_drag_mouse_move))
+                    .on_mouse_move(cx.listener(Self::on_active_split_drag_mouse_move))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(Self::on_splitter_drag_mouse_up),
+                        cx.listener(Self::on_active_split_drag_mouse_up),
                     )
                     .on_mouse_up_out(
                         MouseButton::Left,
-                        cx.listener(Self::on_splitter_drag_mouse_up),
+                        cx.listener(Self::on_active_split_drag_mouse_up),
                     ),
             );
         }
@@ -10452,76 +12873,6 @@ fn rename_note_in_tree_structures(
     add_note_to_tree_structures(new_path, folder_children, folder_notes);
 }
 
-fn derive_prefix_moves(moved_pairs: &[(String, String)]) -> Option<Vec<(String, String)>> {
-    let mut from_to = HashMap::<String, String>::new();
-    let mut to_from = HashMap::<String, String>::new();
-
-    for (from, to) in moved_pairs {
-        let Some(from_folder) = from.rsplit_once('/').map(|(folder, _)| folder) else {
-            continue;
-        };
-        let Some(to_folder) = to.rsplit_once('/').map(|(folder, _)| folder) else {
-            continue;
-        };
-        if from_folder.is_empty() || to_folder.is_empty() {
-            continue;
-        }
-        if from_folder == to_folder {
-            continue;
-        }
-
-        let from_prefix = format!("{from_folder}/");
-        let to_prefix = format!("{to_folder}/");
-
-        if let Some(existing) = from_to.get(&from_prefix) {
-            if existing != &to_prefix {
-                return None;
-            }
-        } else {
-            from_to.insert(from_prefix.clone(), to_prefix.clone());
-        }
-
-        if let Some(existing) = to_from.get(&to_prefix) {
-            if existing != &from_prefix {
-                return None;
-            }
-        } else {
-            to_from.insert(to_prefix, from_prefix);
-        }
-    }
-
-    if from_to.is_empty() {
-        return Some(Vec::new());
-    }
-
-    let mut out = from_to.into_iter().collect::<Vec<_>>();
-    out.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
-
-    for i in 0..out.len() {
-        for j in (i + 1)..out.len() {
-            let (old_i, new_i) = (&out[i].0, &out[i].1);
-            let (old_j, new_j) = (&out[j].0, &out[j].1);
-
-            let overlap = old_i.starts_with(old_j) || old_j.starts_with(old_i);
-            if !overlap {
-                continue;
-            }
-
-            let forward_compatible = new_i.starts_with(new_j) || new_j.starts_with(new_i);
-            if !forward_compatible {
-                return None;
-            }
-        }
-    }
-
-    Some(out)
-}
-
-fn rewrite_path_with_prefix(path: &str, old_prefix: &str, new_prefix: &str) -> Option<String> {
-    let suffix = path.strip_prefix(old_prefix)?;
-    Some(format!("{new_prefix}{suffix}"))
-}
-
 fn push_cache_stats_snapshot(
     snapshots: &mut VecDeque<CacheStatsSnapshot>,
     stats: &QueryCacheStats,
@@ -10667,59 +13018,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn derive_prefix_moves_extracts_folder_prefix_mapping() {
-        let moved = vec![
-            ("notes/old/a.md".to_string(), "notes/new/a.md".to_string()),
-            ("notes/old/b.md".to_string(), "notes/new/b.md".to_string()),
+    fn expand_note_move_pairs_with_prefix_is_exposed_via_core_watch() {
+        let existing = vec![
+            "notes/old/a.md".to_string(),
+            "notes/old/sub/b.md".to_string(),
         ];
-
-        let prefixes = derive_prefix_moves(&moved).expect("valid prefix mapping");
+        let moved = vec![("notes/old/a.md".to_string(), "notes/new/a.md".to_string())];
+        let out = expand_note_move_pairs_with_prefix(&existing, &moved).expect("expanded");
         assert_eq!(
-            prefixes,
-            vec![("notes/old/".to_string(), "notes/new/".to_string())]
+            out,
+            vec![
+                ("notes/old/a.md".to_string(), "notes/new/a.md".to_string()),
+                (
+                    "notes/old/sub/b.md".to_string(),
+                    "notes/new/sub/b.md".to_string()
+                )
+            ]
         );
-    }
-
-    #[test]
-    fn derive_prefix_moves_rejects_conflicting_targets() {
-        let moved = vec![
-            ("notes/old/a.md".to_string(), "notes/new-a/a.md".to_string()),
-            ("notes/old/b.md".to_string(), "notes/new-b/b.md".to_string()),
-        ];
-        assert!(derive_prefix_moves(&moved).is_none());
-    }
-
-    #[test]
-    fn derive_prefix_moves_prefers_longest_prefix() {
-        let moved = vec![
-            (
-                "notes/root/sub/a.md".to_string(),
-                "notes/target/sub/a.md".to_string(),
-            ),
-            (
-                "notes/root/b.md".to_string(),
-                "notes/target/b.md".to_string(),
-            ),
-        ];
-        let prefixes = derive_prefix_moves(&moved).expect("valid prefix mapping");
-        assert_eq!(
-            prefixes[0],
-            (
-                "notes/root/sub/".to_string(),
-                "notes/target/sub/".to_string()
-            )
-        );
-        assert_eq!(
-            prefixes[1],
-            ("notes/root/".to_string(), "notes/target/".to_string())
-        );
-    }
-
-    #[test]
-    fn rewrite_path_with_prefix_rewrites_nested_paths() {
-        let out = rewrite_path_with_prefix("notes/old/sub/c.md", "notes/old/", "notes/new/")
-            .expect("rewritten");
-        assert_eq!(out, "notes/new/sub/c.md");
     }
 
     #[test]
@@ -10803,10 +13118,191 @@ mod tests {
         let folder_notes = HashMap::<String, Vec<String>>::new();
         let folder_children = HashMap::<String, Vec<String>>::new();
 
-        let folder =
-            resolve_base_folder_for_new_items(None, None, &folder_notes, &folder_children);
+        let folder = resolve_base_folder_for_new_items(None, None, &folder_notes, &folder_children);
 
         assert!(folder.is_empty());
+    }
+
+    #[test]
+    fn editor_gutter_digits_are_stable_for_1_to_9999_lines() {
+        assert_eq!(
+            line_number_digits(1).max(EDITOR_GUTTER_STABLE_DIGITS_MAX_9999),
+            4
+        );
+        assert_eq!(
+            line_number_digits(376).max(EDITOR_GUTTER_STABLE_DIGITS_MAX_9999),
+            4
+        );
+        assert_eq!(
+            line_number_digits(9999).max(EDITOR_GUTTER_STABLE_DIGITS_MAX_9999),
+            4
+        );
+        assert_eq!(
+            line_number_digits(10_000).max(EDITOR_GUTTER_STABLE_DIGITS_MAX_9999),
+            5
+        );
+    }
+
+    #[test]
+    fn quick_open_weighted_ranking_prefers_stem_then_short_path() {
+        let query = "plan";
+        let ranked = apply_quick_open_weighted_ranking(
+            query,
+            vec![
+                "notes/deep/project-plan.md".to_string(),
+                "notes/plan.md".to_string(),
+                "archive/planning/index.md".to_string(),
+            ],
+            10,
+        );
+
+        assert_eq!(ranked.first().map(String::as_str), Some("notes/plan.md"));
+        assert!(
+            ranked
+                .iter()
+                .position(|p| p == "notes/deep/project-plan.md")
+                .expect("deep plan present")
+                < ranked
+                    .iter()
+                    .position(|p| p == "archive/planning/index.md")
+                    .expect("planning present")
+        );
+    }
+
+    #[test]
+    fn flatten_search_groups_hides_matches_for_collapsed_group() {
+        let groups = vec![SearchResultGroup {
+            path: "notes/a.md".to_string(),
+            match_count: 2,
+            path_highlights: vec![0..4],
+            matches: vec![
+                SearchMatchEntry {
+                    line: 3,
+                    preview: "alpha one".to_string(),
+                    preview_highlights: vec![0..5],
+                },
+                SearchMatchEntry {
+                    line: 9,
+                    preview: "alpha two".to_string(),
+                    preview_highlights: vec![0..5],
+                },
+            ],
+        }];
+
+        let collapsed = HashSet::from(["notes/a.md".to_string()]);
+        let rows = flatten_search_groups(&groups, &collapsed);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0], SearchRow::File { .. }));
+
+        let expanded = HashSet::new();
+        let rows = flatten_search_groups(&groups, &expanded);
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(rows[1], SearchRow::Match { .. }));
+    }
+
+    #[test]
+    fn collect_highlight_ranges_merges_overlaps() {
+        let ranges = collect_highlight_ranges_lowercase(
+            "project planning",
+            &["plan".to_string(), "anning".to_string()],
+        );
+        assert_eq!(ranges, vec![8..16]);
+    }
+
+    #[test]
+    fn touch_cache_order_moves_recent_and_evicts_oldest() {
+        let mut order = VecDeque::new();
+        assert_eq!(touch_cache_order("a", &mut order, 2), None);
+        assert_eq!(touch_cache_order("b", &mut order, 2), None);
+        assert_eq!(order.iter().cloned().collect::<Vec<_>>(), vec!["a", "b"]);
+
+        assert_eq!(touch_cache_order("a", &mut order, 2), None);
+        assert_eq!(order.iter().cloned().collect::<Vec<_>>(), vec!["b", "a"]);
+
+        let evicted = touch_cache_order("c", &mut order, 2);
+        assert_eq!(evicted.as_deref(), Some("b"));
+        assert_eq!(order.iter().cloned().collect::<Vec<_>>(), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn close_groups_to_right_keeps_left_prefix_and_active() {
+        let mut groups = vec![
+            EditorGroup {
+                id: 1,
+                note_path: Some("notes/a.md".to_string()),
+            },
+            EditorGroup {
+                id: 2,
+                note_path: Some("notes/b.md".to_string()),
+            },
+            EditorGroup {
+                id: 3,
+                note_path: Some("notes/c.md".to_string()),
+            },
+        ];
+        let active_id = 2_u64;
+
+        let Some(active_ix) = groups.iter().position(|g| g.id == active_id) else {
+            panic!("active group missing");
+        };
+        groups.truncate(active_ix + 1);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].id, 1);
+        assert_eq!(groups[1].id, 2);
+    }
+
+    #[test]
+    fn move_note_content_cache_path_transfers_entry() {
+        let mut cache = HashMap::new();
+        let mut order = VecDeque::new();
+        cache.insert("notes/old.md".to_string(), "hello".to_string());
+        let _ = touch_cache_order("notes/old.md", &mut order, NOTE_CONTENT_CACHE_CAPACITY);
+
+        let from = "notes/old.md";
+        let to = "notes/new.md";
+        if let Some(content) = cache.remove(from) {
+            cache.insert(to.to_string(), content);
+        }
+        if let Some(pos) = order.iter().position(|existing| existing == from) {
+            order.remove(pos);
+        }
+        let _ = touch_cache_order(to, &mut order, NOTE_CONTENT_CACHE_CAPACITY);
+
+        assert!(!cache.contains_key(from));
+        assert_eq!(cache.get(to).map(String::as_str), Some("hello"));
+        assert_eq!(order.back().map(String::as_str), Some(to));
+    }
+
+    #[test]
+    fn compact_preview_from_content_limits_lines_and_chars() {
+        let content = "1234567890\nabcdefg\nthird line";
+        let preview = compact_preview_from_content(content, 2, 5);
+        assert_eq!(preview, "12345…\nabcde…\n…");
+    }
+
+    #[test]
+    fn pin_reorder_places_pinned_before_unpinned() {
+        let mut open = vec![
+            "notes/a.md".to_string(),
+            "notes/b.md".to_string(),
+            "notes/c.md".to_string(),
+        ];
+        let pinned = HashSet::from(["notes/c.md".to_string(), "notes/a.md".to_string()]);
+
+        let mut pinned_part = Vec::new();
+        let mut normal_part = Vec::new();
+        for path in &open {
+            if pinned.contains(path) {
+                pinned_part.push(path.clone());
+            } else {
+                normal_part.push(path.clone());
+            }
+        }
+        pinned_part.extend(normal_part);
+        open = pinned_part;
+
+        assert_eq!(open, vec!["notes/a.md", "notes/c.md", "notes/b.md"]);
     }
 }
 
@@ -10870,6 +13366,326 @@ fn byte_offset_for_line(s: &str, line: usize) -> usize {
 
 fn count_words(s: &str) -> usize {
     s.split_whitespace().filter(|w| !w.is_empty()).count()
+}
+
+fn compact_preview_from_content(content: &str, max_lines: usize, max_line_chars: usize) -> String {
+    if content.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    for (ix, line) in content.lines().enumerate() {
+        if ix >= max_lines {
+            out.push('\n');
+            out.push('…');
+            break;
+        }
+
+        if ix > 0 {
+            out.push('\n');
+        }
+
+        let mut chars = line.chars();
+        let clipped: String = chars.by_ref().take(max_line_chars).collect();
+        out.push_str(&clipped);
+        if chars.next().is_some() {
+            out.push('…');
+        }
+    }
+
+    out
+}
+
+fn full_preview_from_content(content: &str, max_lines: usize, max_line_chars: usize) -> String {
+    compact_preview_from_content(content, max_lines, max_line_chars)
+}
+
+fn split_query_tokens_lowercase(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_lowercase())
+        .collect()
+}
+
+fn unique_case_insensitive_tokens(query: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for token in split_query_tokens_lowercase(query) {
+        if seen.insert(token.clone()) {
+            out.push(token);
+        }
+    }
+    out
+}
+
+fn collect_highlight_ranges_lowercase(haystack: &str, tokens: &[String]) -> Vec<Range<usize>> {
+    if haystack.is_empty() || tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let lowered = haystack.to_lowercase();
+    let char_map = lowered
+        .char_indices()
+        .map(|(ix, _)| ix)
+        .chain(std::iter::once(lowered.len()))
+        .collect::<Vec<_>>();
+
+    let to_byte = |char_ix: usize| -> usize {
+        if char_ix >= char_map.len() {
+            haystack.len()
+        } else {
+            char_map[char_ix]
+        }
+    };
+    let mut ranges = Vec::<Range<usize>>::new();
+    for token in tokens {
+        if token.is_empty() {
+            continue;
+        }
+        let mut search_start = 0usize;
+        while search_start < lowered.len() {
+            let Some(rel_ix) = lowered[search_start..].find(token) else {
+                break;
+            };
+            let start = search_start + rel_ix;
+            let end = start + token.len();
+            ranges.push(start..end);
+            search_start = end;
+        }
+    }
+
+    if ranges.is_empty() {
+        return ranges;
+    }
+
+    ranges.sort_by_key(|range| range.start);
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(last) = merged.last_mut() {
+            if range.start <= last.end {
+                if range.end > last.end {
+                    last.end = range.end;
+                }
+                continue;
+            }
+        }
+        merged.push(range);
+    }
+
+    merged
+        .into_iter()
+        .map(|range| to_byte(range.start)..to_byte(range.end))
+        .collect()
+}
+
+fn flatten_search_groups(
+    groups: &[SearchResultGroup],
+    collapsed_paths: &HashSet<String>,
+) -> Vec<SearchRow> {
+    let mut rows = Vec::new();
+    for group in groups {
+        rows.push(SearchRow::File {
+            path: group.path.clone(),
+            match_count: group.match_count,
+            path_highlights: group.path_highlights.clone(),
+        });
+        if collapsed_paths.contains(&group.path) {
+            continue;
+        }
+        for entry in &group.matches {
+            rows.push(SearchRow::Match {
+                path: group.path.clone(),
+                line: entry.line,
+                preview: entry.preview.clone(),
+                preview_highlights: entry.preview_highlights.clone(),
+            });
+        }
+    }
+    rows
+}
+
+fn apply_quick_open_weighted_ranking(
+    query: &str,
+    mut paths: Vec<String>,
+    max_results: usize,
+) -> Vec<String> {
+    if paths.is_empty() {
+        return paths;
+    }
+
+    let query_lower = query.trim().to_lowercase();
+    if query_lower.is_empty() {
+        paths.sort();
+        if paths.len() > max_results {
+            paths.truncate(max_results);
+        }
+        return paths;
+    }
+
+    let query_tokens = unique_case_insensitive_tokens(&query_lower);
+    let mut scored = paths
+        .into_iter()
+        .map(|path| {
+            let path_lower = path.to_lowercase();
+            let file_name = path_lower
+                .rsplit_once('/')
+                .map(|(_, name)| name)
+                .unwrap_or(path_lower.as_str());
+            let file_stem = file_name.trim_end_matches(".md");
+
+            let mut score = 0usize;
+            if file_stem == query_lower {
+                score += 300;
+            }
+            if file_stem.starts_with(&query_lower) {
+                score += 180;
+            }
+            if file_stem.contains(&query_lower) {
+                score += 130;
+            }
+            if file_name.starts_with(&query_lower) {
+                score += 90;
+            }
+            if path_lower.starts_with(&query_lower) {
+                score += 60;
+            }
+            if path_lower.contains(&query_lower) {
+                score += 40;
+            }
+
+            if let Some(fuzzy) = subsequence_score_simple(file_stem, &query_lower) {
+                score += fuzzy.saturating_mul(8);
+            }
+            if let Some(fuzzy) = subsequence_score_simple(&path_lower, &query_lower) {
+                score += fuzzy;
+            }
+
+            for token in &query_tokens {
+                if file_stem.contains(token) {
+                    score += 18;
+                } else if path_lower.contains(token) {
+                    score += 8;
+                }
+            }
+
+            (score, path)
+        })
+        .collect::<Vec<_>>();
+
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.len().cmp(&b.1.len()))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+
+    scored
+        .into_iter()
+        .take(max_results)
+        .map(|(_, path)| path)
+        .collect()
+}
+
+fn subsequence_score_simple(haystack: &str, query: &str) -> Option<usize> {
+    if query.is_empty() {
+        return Some(0);
+    }
+
+    let mut score = 0usize;
+    let mut search_start = 0usize;
+    let mut prev = None;
+    for qch in query.chars() {
+        let found = haystack[search_start..]
+            .char_indices()
+            .find(|(_, hch)| *hch == qch)
+            .map(|(rel_ix, hch)| (search_start + rel_ix, hch.len_utf8()));
+        let (ix, len) = found?;
+        score = score.saturating_add(2);
+        if let Some(prev_ix) = prev {
+            if ix == prev_ix + 1 {
+                score = score.saturating_add(3);
+            }
+        }
+        prev = Some(ix);
+        search_start = ix + len;
+    }
+    Some(score)
+}
+
+fn render_highlighted_segments(
+    text: &str,
+    ranges: &[Range<usize>],
+    normal_color: u32,
+    highlight_color: u32,
+    normal_weight: FontWeight,
+    highlight_weight: FontWeight,
+) -> Vec<gpui::AnyElement> {
+    let mut segments = Vec::new();
+    if text.is_empty() {
+        return segments;
+    }
+
+    if ranges.is_empty() {
+        segments.push(
+            div()
+                .text_color(rgb(normal_color))
+                .font_weight(normal_weight)
+                .child(SharedString::from(text.to_string()))
+                .into_any_element(),
+        );
+        return segments;
+    }
+
+    let to_char_boundary = |s: &str, mut ix: usize| {
+        if ix >= s.len() {
+            return s.len();
+        }
+        while ix > 0 && !s.is_char_boundary(ix) {
+            ix -= 1;
+        }
+        ix
+    };
+
+    let mut cursor = 0usize;
+    for range in ranges {
+        let start = to_char_boundary(text, range.start.min(text.len()));
+        let end = to_char_boundary(text, range.end.min(text.len()));
+        if end <= cursor {
+            continue;
+        }
+        if start > cursor {
+            segments.push(
+                div()
+                    .text_color(rgb(normal_color))
+                    .font_weight(normal_weight)
+                    .child(SharedString::from(text[cursor..start].to_string()))
+                    .into_any_element(),
+            );
+        }
+        if end > start {
+            segments.push(
+                div()
+                    .text_color(rgb(highlight_color))
+                    .font_weight(highlight_weight)
+                    .child(SharedString::from(text[start..end].to_string()))
+                    .into_any_element(),
+            );
+        }
+        cursor = end;
+    }
+
+    if cursor < text.len() {
+        segments.push(
+            div()
+                .text_color(rgb(normal_color))
+                .font_weight(normal_weight)
+                .child(SharedString::from(text[cursor..].to_string()))
+                .into_any_element(),
+        );
+    }
+
+    segments
 }
 
 fn percentile_u128(samples: &mut [u128], percentile: f64) -> u128 {
@@ -10989,7 +13805,10 @@ fn build_editor_highlight_spans(text: &str) -> Vec<EditorHighlightSpan> {
                 range: content_start..marker_end,
                 kind: EditorHighlightKind::QuoteMarker,
             });
-        } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        } else if trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("+ ")
+        {
             let marker_end = (content_start + 1).min(line_end);
             spans.push(EditorHighlightSpan {
                 range: content_start..marker_end,
@@ -10997,7 +13816,8 @@ fn build_editor_highlight_spans(text: &str) -> Vec<EditorHighlightSpan> {
             });
         }
 
-        for (link_start, link_end, text_range, url_range) in markdown_link_ranges(line, line_start) {
+        for (link_start, link_end, text_range, url_range) in markdown_link_ranges(line, line_start)
+        {
             if link_start < link_end {
                 spans.push(EditorHighlightSpan {
                     range: text_range,
@@ -11084,9 +13904,7 @@ fn markdown_link_ranges(
                 continue;
             };
             let close_bracket = i + 1 + close_bracket_rel;
-            if close_bracket + 1 < bytes.len()
-                && bytes[close_bracket + 1] == b'('
-            {
+            if close_bracket + 1 < bytes.len() && bytes[close_bracket + 1] == b'(' {
                 let Some(close_paren_rel) = line[close_bracket + 2..].find(')') else {
                     i += 1;
                     continue;
@@ -11098,7 +13916,12 @@ fn markdown_link_ranges(
                 let text_end = line_start + close_bracket;
                 let url_start = line_start + close_bracket + 2;
                 let url_end = line_start + close_paren;
-                out.push((full_start, full_end, text_start..text_end, url_start..url_end));
+                out.push((
+                    full_start,
+                    full_end,
+                    text_start..text_end,
+                    url_start..url_end,
+                ));
                 i = close_paren + 1;
                 continue;
             }
@@ -11125,17 +13948,41 @@ fn ui_corner_tag(color: u32) -> gpui::Svg {
         .with_transformation(Transformation::rotate(radians(std::f32::consts::FRAC_PI_4)))
 }
 
+fn initial_window_bounds_from_layout(layout: &WindowLayoutSettings, cx: &mut App) -> WindowBounds {
+    let width_px = layout
+        .window_width_px
+        .unwrap_or(WINDOW_DEFAULT_WIDTH_PX)
+        .max(WINDOW_MIN_WIDTH_PX);
+    let height_px = layout
+        .window_height_px
+        .unwrap_or(WINDOW_DEFAULT_HEIGHT_PX)
+        .max(WINDOW_MIN_HEIGHT_PX);
+    let restored_size = size(px(width_px as f32), px(height_px as f32));
+
+    match (layout.window_x_px, layout.window_y_px) {
+        (Some(x), Some(y)) => WindowBounds::Windowed(Bounds::new(
+            point(px(x as f32), px(y as f32)),
+            restored_size,
+        )),
+        _ => WindowBounds::Windowed(Bounds::centered(None, restored_size, cx)),
+    }
+}
+
 fn main() {
     Application::new()
         .with_assets(UiAssets {
             base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
         })
         .run(|cx: &mut App| {
-            let bounds = Bounds::centered(None, size(px(1200.0), px(760.0)), cx);
+            let boot = load_boot_context();
+            let bounds = initial_window_bounds_from_layout(&boot.app_settings.window_layout, cx);
             cx.open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(820.0), px(540.0))),
+                    window_bounds: Some(bounds),
+                    window_min_size: Some(size(
+                        px(WINDOW_MIN_WIDTH_PX as f32),
+                        px(WINDOW_MIN_HEIGHT_PX as f32),
+                    )),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(SharedString::from("XNote")),
                         appears_transparent: true,

@@ -98,10 +98,7 @@ impl EditorBuffer {
         let after_end = normalized_range.start + tx.replacement.len();
         let before = EditTransaction::replace(normalized_range.start..after_end, removed);
         let after = EditTransaction::replace(normalized_range, tx.replacement);
-        let record = EditRecord {
-            before,
-            after,
-        };
+        let record = EditRecord { before, after };
 
         self.undo_stack.push(record.clone());
         self.redo_stack.clear();

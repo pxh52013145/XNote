@@ -541,8 +541,6 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|d| d.message.contains("multiple H1 headings")));
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.message == "provider-message"));
+        assert!(diagnostics.iter().any(|d| d.message == "provider-message"));
     }
 }

@@ -2,6 +2,7 @@ use crate::paths::to_posix_path;
 use anyhow::Result;
 use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -205,7 +206,11 @@ impl VaultWatcher {
         Some(rel_posix)
     }
 
-    fn to_vault_rel_folder_path(&self, abs_path: &Path, require_dir_metadata: bool) -> Option<String> {
+    fn to_vault_rel_folder_path(
+        &self,
+        abs_path: &Path,
+        require_dir_metadata: bool,
+    ) -> Option<String> {
         let rel = abs_path.strip_prefix(&self.root).ok()?;
         let rel_posix = to_posix_path(rel).ok()?;
         let rel_posix = rel_posix.trim_end_matches('/').to_string();
@@ -223,6 +228,206 @@ impl VaultWatcher {
 
         Some(rel_posix)
     }
+}
+
+pub fn collapse_move_pairs(moved_pairs: &[(String, String)]) -> Option<Vec<(String, String)>> {
+    let mut moved = HashMap::<String, String>::new();
+    for (from, to) in moved_pairs {
+        if from == to {
+            continue;
+        }
+
+        if let Some(existing) = moved.get(from) {
+            if existing != to {
+                return None;
+            }
+            continue;
+        }
+        moved.insert(from.clone(), to.clone());
+    }
+
+    let collapsed = collapse_moved_map_checked(moved)?;
+    let mut out = collapsed.into_iter().collect::<Vec<_>>();
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    Some(out)
+}
+
+pub fn derive_prefix_moves_from_note_moves(
+    moved_pairs: &[(String, String)],
+) -> Option<Vec<(String, String)>> {
+    let mut from_to = HashMap::<String, String>::new();
+    let mut to_from = HashMap::<String, String>::new();
+
+    for (from, to) in moved_pairs {
+        let Some(from_folder) = from.rsplit_once('/').map(|(folder, _)| folder) else {
+            continue;
+        };
+        let Some(to_folder) = to.rsplit_once('/').map(|(folder, _)| folder) else {
+            continue;
+        };
+        if from_folder.is_empty() || to_folder.is_empty() || from_folder == to_folder {
+            continue;
+        }
+
+        let from_prefix = format!("{from_folder}/");
+        let to_prefix = format!("{to_folder}/");
+
+        if let Some(existing) = from_to.get(&from_prefix) {
+            if existing != &to_prefix {
+                return None;
+            }
+        } else {
+            from_to.insert(from_prefix.clone(), to_prefix.clone());
+        }
+
+        if let Some(existing) = to_from.get(&to_prefix) {
+            if existing != &from_prefix {
+                return None;
+            }
+        } else {
+            to_from.insert(to_prefix, from_prefix);
+        }
+    }
+
+    if from_to.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut out = from_to.into_iter().collect::<Vec<_>>();
+    out.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+
+    for i in 0..out.len() {
+        for j in (i + 1)..out.len() {
+            let (old_i, new_i) = (&out[i].0, &out[i].1);
+            let (old_j, new_j) = (&out[j].0, &out[j].1);
+
+            let overlap = old_i.starts_with(old_j) || old_j.starts_with(old_i);
+            if !overlap {
+                continue;
+            }
+
+            let forward_compatible = new_i.starts_with(new_j) || new_j.starts_with(new_i);
+            if !forward_compatible {
+                return None;
+            }
+        }
+    }
+
+    Some(out)
+}
+
+pub fn rewrite_path_with_prefix(path: &str, old_prefix: &str, new_prefix: &str) -> Option<String> {
+    let suffix = path.strip_prefix(old_prefix)?;
+    Some(format!("{new_prefix}{suffix}"))
+}
+
+pub fn expand_note_move_pairs_with_prefix(
+    existing_paths: &[String],
+    moved_pairs: &[(String, String)],
+) -> Option<Vec<(String, String)>> {
+    let collapsed = collapse_move_pairs(moved_pairs)?;
+    if collapsed.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let prefix_moves = derive_prefix_moves_from_note_moves(&collapsed)?;
+    let mut move_map = collapsed.into_iter().collect::<HashMap<String, String>>();
+
+    if !prefix_moves.is_empty() {
+        for from in existing_paths {
+            if move_map.contains_key(from) {
+                continue;
+            }
+
+            for (old_prefix, new_prefix) in &prefix_moves {
+                let Some(to) = rewrite_path_with_prefix(from, old_prefix, new_prefix) else {
+                    continue;
+                };
+                if from != &to {
+                    move_map.insert(from.clone(), to);
+                }
+                break;
+            }
+        }
+    }
+
+    let mut out = move_map.into_iter().collect::<Vec<_>>();
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    Some(out)
+}
+
+pub fn note_path_has_folder_prefix(note_path: &str, folder_prefix: &str) -> bool {
+    if note_path == folder_prefix {
+        return true;
+    }
+
+    note_path
+        .strip_prefix(folder_prefix)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+pub fn expand_folder_move_pairs_to_note_moves(
+    existing_note_paths: &[String],
+    folder_moves: &[(String, String)],
+) -> Option<Vec<(String, String)>> {
+    let mut collapsed = collapse_move_pairs(folder_moves)?;
+    if collapsed.is_empty() {
+        return Some(Vec::new());
+    }
+
+    collapsed.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+
+    let mut out = Vec::new();
+    for old_path in existing_note_paths {
+        let rewritten = rewrite_note_path_with_folder_moves(old_path, &collapsed)?;
+        if old_path != &rewritten {
+            out.push((old_path.clone(), rewritten));
+        }
+    }
+
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    Some(out)
+}
+
+fn rewrite_note_path_with_folder_moves(
+    note_path: &str,
+    folder_moves: &[(String, String)],
+) -> Option<String> {
+    let mut current = note_path.to_string();
+    let mut hops = 0usize;
+
+    loop {
+        let mut rewritten = false;
+        for (from, to) in folder_moves {
+            if current == *from {
+                current = to.clone();
+                rewritten = true;
+                break;
+            }
+
+            let Some(suffix) = current.strip_prefix(from) else {
+                continue;
+            };
+            if suffix.is_empty() || !suffix.starts_with('/') {
+                continue;
+            }
+
+            current = format!("{to}{suffix}");
+            rewritten = true;
+            break;
+        }
+
+        if !rewritten {
+            break;
+        }
+
+        hops += 1;
+        if hops > folder_moves.len() {
+            return None;
+        }
+    }
+
+    Some(current)
 }
 
 fn dedup_changes(changes: Vec<VaultWatchChange>) -> Result<Vec<VaultWatchChange>> {
@@ -345,23 +550,35 @@ fn dedup_changes(changes: Vec<VaultWatchChange>) -> Result<Vec<VaultWatchChange>
 fn collapse_moved_map(
     moved: std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<String, String> {
-    let mut out = std::collections::HashMap::new();
+    collapse_moved_map_checked(moved).unwrap_or_default()
+}
 
-    for (from, mut to) in moved.clone() {
+fn collapse_moved_map_checked(moved: HashMap<String, String>) -> Option<HashMap<String, String>> {
+    let mut out = HashMap::new();
+
+    for (from, to0) in &moved {
+        let mut current = to0.clone();
+        let mut seen = HashSet::<String>::new();
+        seen.insert(from.clone());
         let mut hops = 0usize;
-        while let Some(next) = moved.get(&to) {
-            if next == &to || hops > moved.len() {
-                break;
+
+        while let Some(next) = moved.get(&current) {
+            if !seen.insert(current.clone()) {
+                return None;
             }
-            to = next.clone();
+            current = next.clone();
             hops += 1;
+            if hops > moved.len() {
+                return None;
+            }
         }
-        if from != to {
-            out.insert(from, to);
+
+        if from != &current {
+            out.insert(from.clone(), current);
         }
     }
 
-    out
+    Some(out)
 }
 
 #[cfg(test)]
@@ -518,5 +735,66 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn collapse_move_pairs_detects_cycle() {
+        let moved = vec![
+            ("notes/a".to_string(), "notes/b".to_string()),
+            ("notes/b".to_string(), "notes/a".to_string()),
+        ];
+        assert!(collapse_move_pairs(&moved).is_none());
+    }
+
+    #[test]
+    fn expand_note_move_pairs_with_prefix_expands_existing_paths() {
+        let existing = vec![
+            "notes/old/a.md".to_string(),
+            "notes/old/b.md".to_string(),
+            "notes/old/sub/c.md".to_string(),
+        ];
+        let moved = vec![("notes/old/a.md".to_string(), "notes/new/a.md".to_string())];
+
+        let out = expand_note_move_pairs_with_prefix(&existing, &moved).expect("expanded");
+        assert_eq!(
+            out,
+            vec![
+                ("notes/old/a.md".to_string(), "notes/new/a.md".to_string()),
+                ("notes/old/b.md".to_string(), "notes/new/b.md".to_string()),
+                (
+                    "notes/old/sub/c.md".to_string(),
+                    "notes/new/sub/c.md".to_string()
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_folder_move_pairs_to_note_moves_rewrites_note_paths() {
+        let existing = vec![
+            "notes/a/1.md".to_string(),
+            "notes/a/sub/2.md".to_string(),
+            "notes/x/3.md".to_string(),
+        ];
+        let folder_moves = vec![("notes/a".to_string(), "notes/b".to_string())];
+
+        let out =
+            expand_folder_move_pairs_to_note_moves(&existing, &folder_moves).expect("rewritten");
+        assert_eq!(
+            out,
+            vec![
+                ("notes/a/1.md".to_string(), "notes/b/1.md".to_string()),
+                (
+                    "notes/a/sub/2.md".to_string(),
+                    "notes/b/sub/2.md".to_string()
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn note_path_has_folder_prefix_respects_boundaries() {
+        assert!(note_path_has_folder_prefix("notes/a/x.md", "notes/a"));
+        assert!(!note_path_has_folder_prefix("notes/ab/x.md", "notes/a"));
     }
 }

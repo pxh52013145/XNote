@@ -28,6 +28,8 @@ pub struct AppSettings {
     pub keymap_contextual: Vec<KeymapRule>,
     #[serde(default)]
     pub plugin_policy: AppPluginPolicy,
+    #[serde(default)]
+    pub window_layout: WindowLayoutSettings,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -72,6 +74,30 @@ pub struct FilesLinksSettings {
     pub prefer_wikilink_titles: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowLayoutSettings {
+    #[serde(default)]
+    pub window_x_px: Option<i32>,
+    #[serde(default)]
+    pub window_y_px: Option<i32>,
+    #[serde(default)]
+    pub window_width_px: Option<u32>,
+    #[serde(default)]
+    pub window_height_px: Option<u32>,
+    #[serde(default)]
+    pub panel_shell_width_px: Option<u32>,
+    #[serde(default)]
+    pub workspace_width_px: Option<u32>,
+    #[serde(default)]
+    pub panel_shell_collapsed: Option<bool>,
+    #[serde(default)]
+    pub workspace_collapsed: Option<bool>,
+    #[serde(default)]
+    pub editor_split_ratio_milli: Option<u16>,
+    #[serde(default)]
+    pub editor_split_direction: Option<String>,
+}
+
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
@@ -94,6 +120,23 @@ impl Default for FilesLinksSettings {
         Self {
             external_sync: default_external_sync(),
             prefer_wikilink_titles: default_prefer_wikilink_titles(),
+        }
+    }
+}
+
+impl Default for WindowLayoutSettings {
+    fn default() -> Self {
+        Self {
+            window_x_px: None,
+            window_y_px: None,
+            window_width_px: None,
+            window_height_px: None,
+            panel_shell_width_px: None,
+            workspace_width_px: None,
+            panel_shell_collapsed: None,
+            workspace_collapsed: None,
+            editor_split_ratio_milli: None,
+            editor_split_direction: None,
         }
     }
 }
@@ -121,6 +164,7 @@ impl Default for AppSettings {
             keymap_overrides: HashMap::new(),
             keymap_contextual: Vec::new(),
             plugin_policy: AppPluginPolicy::default(),
+            window_layout: WindowLayoutSettings::default(),
         }
     }
 }
@@ -204,7 +248,43 @@ impl AppSettings {
         }
 
         merged.plugin_policy = overlay.plugin_policy.clone();
+        merged.window_layout.merge_overlay(&overlay.window_layout);
         merged
+    }
+}
+
+impl WindowLayoutSettings {
+    fn merge_overlay(&mut self, overlay: &WindowLayoutSettings) {
+        if let Some(v) = overlay.window_x_px {
+            self.window_x_px = Some(v);
+        }
+        if let Some(v) = overlay.window_y_px {
+            self.window_y_px = Some(v);
+        }
+        if let Some(v) = overlay.window_width_px {
+            self.window_width_px = Some(v);
+        }
+        if let Some(v) = overlay.window_height_px {
+            self.window_height_px = Some(v);
+        }
+        if let Some(v) = overlay.panel_shell_width_px {
+            self.panel_shell_width_px = Some(v);
+        }
+        if let Some(v) = overlay.workspace_width_px {
+            self.workspace_width_px = Some(v);
+        }
+        if let Some(v) = overlay.panel_shell_collapsed {
+            self.panel_shell_collapsed = Some(v);
+        }
+        if let Some(v) = overlay.workspace_collapsed {
+            self.workspace_collapsed = Some(v);
+        }
+        if let Some(v) = overlay.editor_split_ratio_milli {
+            self.editor_split_ratio_milli = Some(v);
+        }
+        if let Some(v) = &overlay.editor_split_direction {
+            self.editor_split_direction = Some(v.clone());
+        }
     }
 }
 
@@ -418,6 +498,11 @@ mod tests {
         project
             .keymap_overrides
             .insert("open_vault".to_string(), "Ctrl+Shift+O".to_string());
+        project.window_layout.window_width_px = Some(1400);
+        project.window_layout.panel_shell_width_px = Some(320);
+        project.window_layout.panel_shell_collapsed = Some(true);
+        project.window_layout.editor_split_ratio_milli = Some(640);
+        project.window_layout.editor_split_direction = Some("down".to_string());
         save_project_settings(&project_dir, &project).expect("save project settings");
 
         let effective = load_effective_settings(&user_dir, Some(&project_dir))
@@ -436,8 +521,50 @@ mod tests {
                 .map(String::as_str),
             Some("Ctrl+Shift+O")
         );
+        assert_eq!(effective.window_layout.window_width_px, Some(1400));
+        assert_eq!(effective.window_layout.panel_shell_width_px, Some(320));
+        assert_eq!(effective.window_layout.panel_shell_collapsed, Some(true));
+        assert_eq!(effective.window_layout.editor_split_ratio_milli, Some(640));
+        assert_eq!(
+            effective.window_layout.editor_split_direction.as_deref(),
+            Some("down")
+        );
 
         let _ = fs::remove_dir_all(&user_dir);
         let _ = fs::remove_dir_all(&project_dir);
+    }
+
+    #[test]
+    fn window_layout_merge_overlay_uses_overlay_values_when_present() {
+        let mut base = WindowLayoutSettings {
+            window_width_px: Some(1200),
+            window_height_px: Some(760),
+            panel_shell_width_px: Some(213),
+            workspace_width_px: Some(260),
+            panel_shell_collapsed: Some(false),
+            workspace_collapsed: Some(false),
+            editor_split_ratio_milli: Some(500),
+            editor_split_direction: Some("right".to_string()),
+            ..WindowLayoutSettings::default()
+        };
+        let overlay = WindowLayoutSettings {
+            window_width_px: Some(1366),
+            panel_shell_width_px: Some(280),
+            workspace_collapsed: Some(true),
+            editor_split_ratio_milli: Some(620),
+            editor_split_direction: Some("down".to_string()),
+            ..WindowLayoutSettings::default()
+        };
+
+        base.merge_overlay(&overlay);
+
+        assert_eq!(base.window_width_px, Some(1366));
+        assert_eq!(base.window_height_px, Some(760));
+        assert_eq!(base.panel_shell_width_px, Some(280));
+        assert_eq!(base.workspace_width_px, Some(260));
+        assert_eq!(base.panel_shell_collapsed, Some(false));
+        assert_eq!(base.workspace_collapsed, Some(true));
+        assert_eq!(base.editor_split_ratio_milli, Some(620));
+        assert_eq!(base.editor_split_direction.as_deref(), Some("down"));
     }
 }
