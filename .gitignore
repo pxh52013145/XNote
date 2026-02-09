@@ -22,3 +22,8 @@ Knowledge.vault/
 # Electron / OS
 Thumbs.db
 Desktop.ini
+
+# Local planning/docs/design artifacts
+logs/
+docs/
+design/

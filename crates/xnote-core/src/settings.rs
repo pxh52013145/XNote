@@ -96,6 +96,22 @@ pub struct WindowLayoutSettings {
     pub editor_split_ratio_milli: Option<u16>,
     #[serde(default)]
     pub editor_split_direction: Option<String>,
+    #[serde(default)]
+    pub editor_group_count: Option<u8>,
+    #[serde(default)]
+    pub editor_active_group_index: Option<u8>,
+    #[serde(default)]
+    pub editor_group_width_weights_px: Option<Vec<u32>>,
+    #[serde(default)]
+    pub editor_group_view_modes: Option<Vec<String>>,
+    #[serde(default)]
+    pub editor_group_active_note_paths: Option<Vec<Option<String>>>,
+    #[serde(default)]
+    pub editor_group_tabs: Option<Vec<Vec<String>>>,
+    #[serde(default)]
+    pub editor_group_pinned_tabs: Option<Vec<Vec<String>>>,
+    #[serde(default)]
+    pub editor_group_note_mru: Option<Vec<Vec<String>>>,
 }
 
 impl Default for AppearanceSettings {
@@ -137,6 +153,14 @@ impl Default for WindowLayoutSettings {
             workspace_collapsed: None,
             editor_split_ratio_milli: None,
             editor_split_direction: None,
+            editor_group_count: None,
+            editor_active_group_index: None,
+            editor_group_width_weights_px: None,
+            editor_group_view_modes: None,
+            editor_group_active_note_paths: None,
+            editor_group_tabs: None,
+            editor_group_pinned_tabs: None,
+            editor_group_note_mru: None,
         }
     }
 }
@@ -284,6 +308,30 @@ impl WindowLayoutSettings {
         }
         if let Some(v) = &overlay.editor_split_direction {
             self.editor_split_direction = Some(v.clone());
+        }
+        if let Some(v) = overlay.editor_group_count {
+            self.editor_group_count = Some(v);
+        }
+        if let Some(v) = overlay.editor_active_group_index {
+            self.editor_active_group_index = Some(v);
+        }
+        if let Some(v) = &overlay.editor_group_width_weights_px {
+            self.editor_group_width_weights_px = Some(v.clone());
+        }
+        if let Some(v) = &overlay.editor_group_view_modes {
+            self.editor_group_view_modes = Some(v.clone());
+        }
+        if let Some(v) = &overlay.editor_group_active_note_paths {
+            self.editor_group_active_note_paths = Some(v.clone());
+        }
+        if let Some(v) = &overlay.editor_group_tabs {
+            self.editor_group_tabs = Some(v.clone());
+        }
+        if let Some(v) = &overlay.editor_group_pinned_tabs {
+            self.editor_group_pinned_tabs = Some(v.clone());
+        }
+        if let Some(v) = &overlay.editor_group_note_mru {
+            self.editor_group_note_mru = Some(v.clone());
         }
     }
 }
@@ -503,6 +551,34 @@ mod tests {
         project.window_layout.panel_shell_collapsed = Some(true);
         project.window_layout.editor_split_ratio_milli = Some(640);
         project.window_layout.editor_split_direction = Some("down".to_string());
+        project.window_layout.editor_group_count = Some(3);
+        project.window_layout.editor_active_group_index = Some(1);
+        project.window_layout.editor_group_width_weights_px = Some(vec![420, 320, 460]);
+        project.window_layout.editor_group_view_modes = Some(vec![
+            "edit".to_string(),
+            "preview".to_string(),
+            "edit".to_string(),
+        ]);
+        project.window_layout.editor_group_active_note_paths = Some(vec![
+            Some("notes/A.md".to_string()),
+            Some("notes/B.md".to_string()),
+            None,
+        ]);
+        project.window_layout.editor_group_tabs = Some(vec![
+            vec!["notes/A.md".to_string(), "notes/A2.md".to_string()],
+            vec!["notes/B.md".to_string()],
+            Vec::new(),
+        ]);
+        project.window_layout.editor_group_pinned_tabs = Some(vec![
+            vec!["notes/A.md".to_string()],
+            vec!["notes/B.md".to_string()],
+            Vec::new(),
+        ]);
+        project.window_layout.editor_group_note_mru = Some(vec![
+            vec!["notes/A2.md".to_string(), "notes/A.md".to_string()],
+            vec!["notes/B.md".to_string()],
+            Vec::new(),
+        ]);
         save_project_settings(&project_dir, &project).expect("save project settings");
 
         let effective = load_effective_settings(&user_dir, Some(&project_dir))
@@ -529,6 +605,52 @@ mod tests {
             effective.window_layout.editor_split_direction.as_deref(),
             Some("down")
         );
+        assert_eq!(effective.window_layout.editor_group_count, Some(3));
+        assert_eq!(effective.window_layout.editor_active_group_index, Some(1));
+        assert_eq!(
+            effective.window_layout.editor_group_width_weights_px,
+            Some(vec![420, 320, 460])
+        );
+        assert_eq!(
+            effective.window_layout.editor_group_view_modes,
+            Some(vec![
+                "edit".to_string(),
+                "preview".to_string(),
+                "edit".to_string()
+            ])
+        );
+        assert_eq!(
+            effective.window_layout.editor_group_active_note_paths,
+            Some(vec![
+                Some("notes/A.md".to_string()),
+                Some("notes/B.md".to_string()),
+                None,
+            ])
+        );
+        assert_eq!(
+            effective.window_layout.editor_group_tabs,
+            Some(vec![
+                vec!["notes/A.md".to_string(), "notes/A2.md".to_string()],
+                vec!["notes/B.md".to_string()],
+                Vec::new(),
+            ])
+        );
+        assert_eq!(
+            effective.window_layout.editor_group_pinned_tabs,
+            Some(vec![
+                vec!["notes/A.md".to_string()],
+                vec!["notes/B.md".to_string()],
+                Vec::new(),
+            ])
+        );
+        assert_eq!(
+            effective.window_layout.editor_group_note_mru,
+            Some(vec![
+                vec!["notes/A2.md".to_string(), "notes/A.md".to_string()],
+                vec!["notes/B.md".to_string()],
+                Vec::new(),
+            ])
+        );
 
         let _ = fs::remove_dir_all(&user_dir);
         let _ = fs::remove_dir_all(&project_dir);
@@ -545,6 +667,14 @@ mod tests {
             workspace_collapsed: Some(false),
             editor_split_ratio_milli: Some(500),
             editor_split_direction: Some("right".to_string()),
+            editor_group_count: Some(2),
+            editor_active_group_index: Some(0),
+            editor_group_width_weights_px: Some(vec![500, 700]),
+            editor_group_view_modes: Some(vec!["edit".to_string(), "preview".to_string()]),
+            editor_group_active_note_paths: Some(vec![Some("a.md".to_string()), None]),
+            editor_group_tabs: Some(vec![vec!["a.md".to_string()], vec!["b.md".to_string()]]),
+            editor_group_pinned_tabs: Some(vec![vec!["a.md".to_string()], vec![]]),
+            editor_group_note_mru: Some(vec![vec!["a.md".to_string()], vec!["b.md".to_string()]]),
             ..WindowLayoutSettings::default()
         };
         let overlay = WindowLayoutSettings {
@@ -553,6 +683,34 @@ mod tests {
             workspace_collapsed: Some(true),
             editor_split_ratio_milli: Some(620),
             editor_split_direction: Some("down".to_string()),
+            editor_group_count: Some(3),
+            editor_active_group_index: Some(2),
+            editor_group_width_weights_px: Some(vec![360, 320, 686]),
+            editor_group_view_modes: Some(vec![
+                "preview".to_string(),
+                "edit".to_string(),
+                "preview".to_string(),
+            ]),
+            editor_group_active_note_paths: Some(vec![
+                Some("x.md".to_string()),
+                Some("y.md".to_string()),
+                Some("z.md".to_string()),
+            ]),
+            editor_group_tabs: Some(vec![
+                vec!["x.md".to_string(), "x2.md".to_string()],
+                vec!["y.md".to_string()],
+                vec!["z.md".to_string()],
+            ]),
+            editor_group_pinned_tabs: Some(vec![
+                vec!["x.md".to_string()],
+                vec!["y.md".to_string()],
+                vec![],
+            ]),
+            editor_group_note_mru: Some(vec![
+                vec!["x2.md".to_string(), "x.md".to_string()],
+                vec!["y.md".to_string()],
+                vec!["z.md".to_string()],
+            ]),
             ..WindowLayoutSettings::default()
         };
 
@@ -566,5 +724,51 @@ mod tests {
         assert_eq!(base.workspace_collapsed, Some(true));
         assert_eq!(base.editor_split_ratio_milli, Some(620));
         assert_eq!(base.editor_split_direction.as_deref(), Some("down"));
+        assert_eq!(base.editor_group_count, Some(3));
+        assert_eq!(base.editor_active_group_index, Some(2));
+        assert_eq!(
+            base.editor_group_width_weights_px,
+            Some(vec![360, 320, 686])
+        );
+        assert_eq!(
+            base.editor_group_view_modes,
+            Some(vec![
+                "preview".to_string(),
+                "edit".to_string(),
+                "preview".to_string(),
+            ])
+        );
+        assert_eq!(
+            base.editor_group_active_note_paths,
+            Some(vec![
+                Some("x.md".to_string()),
+                Some("y.md".to_string()),
+                Some("z.md".to_string()),
+            ])
+        );
+        assert_eq!(
+            base.editor_group_tabs,
+            Some(vec![
+                vec!["x.md".to_string(), "x2.md".to_string()],
+                vec!["y.md".to_string()],
+                vec!["z.md".to_string()],
+            ])
+        );
+        assert_eq!(
+            base.editor_group_pinned_tabs,
+            Some(vec![
+                vec!["x.md".to_string()],
+                vec!["y.md".to_string()],
+                vec![],
+            ])
+        );
+        assert_eq!(
+            base.editor_group_note_mru,
+            Some(vec![
+                vec!["x2.md".to_string(), "x.md".to_string()],
+                vec!["y.md".to_string()],
+                vec!["z.md".to_string()],
+            ])
+        );
     }
 }

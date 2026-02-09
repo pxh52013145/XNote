@@ -117,9 +117,11 @@ const EXPLORER_HEADER_ACTION_SIZE: f32 = 20.0;
 const EXPLORER_HEADER_ICON_SIZE: f32 = 14.0;
 const EDITOR_SPLIT_MIN_RATIO: f32 = 0.25;
 const EDITOR_SPLIT_MAX_RATIO: f32 = 0.75;
-const EDITOR_SPLIT_MIN_PANE_WIDTH: f32 = 220.0;
-const INACTIVE_GROUP_PREVIEW_MAX_LINES: usize = 320;
-const INACTIVE_GROUP_PREVIEW_MAX_LINE_CHARS: usize = 512;
+const EDITOR_GROUP_SPLITTER_WIDTH: f32 = 10.0;
+const EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH: f32 = 80.0;
+const EDITOR_GROUP_INITIAL_TOTAL_WIDTH: f32 = 960.0;
+const INACTIVE_GROUP_PREVIEW_MAX_LINES: usize = 2000;
+const INACTIVE_GROUP_PREVIEW_MAX_LINE_CHARS: usize = 4096;
 const EDITOR_GROUP_MRU_CAPACITY: usize = 24;
 const EDITOR_SPLIT_RATIO_SCALE: f32 = 1000.0;
 const EDITOR_SPLIT_DIRECTION_DOWN: &str = "down";
@@ -154,6 +156,24 @@ impl EditorSplitDirection {
     }
 }
 
+impl EditorViewMode {
+    fn to_tag(self) -> &'static str {
+        match self {
+            Self::Edit => "edit",
+            Self::Preview => "preview",
+            Self::Split => "split",
+        }
+    }
+
+    fn from_tag(tag: &str) -> Self {
+        match tag {
+            "preview" => Self::Preview,
+            "split" => Self::Split,
+            _ => Self::Edit,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct EditorTabViewState {
     mode: EditorViewMode,
@@ -177,10 +197,24 @@ impl EditorTabViewState {
     }
 }
 
+fn default_editor_group_view_state() -> EditorTabViewState {
+    EditorTabViewState {
+        mode: EditorViewMode::Edit,
+        split_ratio: 0.5,
+        split_direction: EditorSplitDirection::Right,
+        split_saved_mode: EditorViewMode::Edit,
+    }
+    .sanitize()
+}
+
 #[derive(Clone, Debug)]
 struct EditorGroup {
     id: u64,
     note_path: Option<String>,
+    tabs: Vec<String>,
+    pinned_tabs: HashSet<String>,
+    note_mru: VecDeque<String>,
+    view_state: EditorTabViewState,
 }
 
 #[derive(Clone, Debug)]
@@ -425,6 +459,7 @@ enum WorkspaceMode {
 enum SplitterKind {
     PanelShell,
     Workspace,
+    EditorGroup,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -432,6 +467,8 @@ struct SplitterDrag {
     kind: SplitterKind,
     start_x: Pixels,
     start_width: Pixels,
+    group_split_index: Option<usize>,
+    group_pair_total: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -818,6 +855,9 @@ struct XnoteWindow {
     editor_split_ratio: f32,
     editor_split_direction: EditorSplitDirection,
     editor_split_saved_mode: EditorViewMode,
+    editor_group_width_weights: Vec<f32>,
+    editor_group_target_total_width: f32,
+    editor_group_drag: Option<SplitterDrag>,
     open_note_word_count: usize,
     open_note_heading_count: usize,
     open_note_link_count: usize,
@@ -928,6 +968,10 @@ impl XnoteWindow {
             editor_groups: vec![EditorGroup {
                 id: 1,
                 note_path: None,
+                tabs: Vec::new(),
+                pinned_tabs: HashSet::new(),
+                note_mru: VecDeque::new(),
+                view_state: default_editor_group_view_state(),
             }],
             active_editor_group_id: 1,
             next_editor_group_id: 2,
@@ -1012,6 +1056,9 @@ impl XnoteWindow {
             editor_split_ratio: 0.5,
             editor_split_direction: EditorSplitDirection::Right,
             editor_split_saved_mode: EditorViewMode::Edit,
+            editor_group_width_weights: vec![EDITOR_GROUP_INITIAL_TOTAL_WIDTH],
+            editor_group_target_total_width: EDITOR_GROUP_INITIAL_TOTAL_WIDTH,
+            editor_group_drag: None,
             open_note_word_count: 0,
             open_note_heading_count: 0,
             open_note_link_count: 0,
@@ -1102,7 +1149,16 @@ impl XnoteWindow {
         self.editor_groups.push(EditorGroup {
             id: 1,
             note_path: None,
+            tabs: Vec::new(),
+            pinned_tabs: HashSet::new(),
+            note_mru: VecDeque::new(),
+            view_state: default_editor_group_view_state(),
         });
+        self.editor_group_width_weights.clear();
+        self.editor_group_width_weights
+            .push(EDITOR_GROUP_INITIAL_TOTAL_WIDTH);
+        self.editor_group_target_total_width = EDITOR_GROUP_INITIAL_TOTAL_WIDTH;
+        self.editor_group_drag = None;
         self.active_editor_group_id = 1;
         self.next_editor_group_id = 2;
         self.editor_group_mru.clear();
@@ -1226,6 +1282,7 @@ impl XnoteWindow {
                         this.explorer_expanded_folders.clear();
                         this.explorer_expanded_folders.insert(String::new());
                         this.rebuild_explorer_rows(cx);
+                        this.apply_restored_group_layout_to_open_editors(cx);
                         this.status = SharedString::from("Explorer ready, building index...");
                         this.activate_plugins(PluginActivationEvent::OnVaultOpened);
                         this.rebuild_knowledge_index_async(scan_entries, cx);
@@ -1405,6 +1462,8 @@ impl XnoteWindow {
         let Some(vault) = self.vault() else {
             return;
         };
+
+        self.editor_group_drag = None;
 
         self.scan_state = ScanState::Scanning;
         self.index_state = IndexState::Building;
@@ -1632,16 +1691,23 @@ impl XnoteWindow {
 
         self.open_editors.remove(ix);
         self.pinned_editors.remove(path);
-        self.editor_tab_view_state.remove(path);
-        for history in self.editor_group_note_history.values_mut() {
-            history.retain(|existing| existing != path);
-        }
-        for group in &mut self.editor_groups {
-            if group.note_path.as_deref() == Some(path) {
-                group.note_path = None;
+        if let Some(active_group_id) = self.active_group().map(|group| group.id) {
+            if let Some(history) = self.editor_group_note_history.get_mut(&active_group_id) {
+                history.retain(|existing| existing != path);
             }
         }
-        if self.selected_note.as_deref() == Some(path) {
+        self.sync_active_group_tabs_from_open_editors();
+        let still_open_in_any_group = self
+            .editor_groups
+            .iter()
+            .any(|group| group.tabs.iter().any(|tab| tab == path));
+        if !still_open_in_any_group {
+            self.editor_tab_view_state.remove(path);
+            for history in self.editor_group_note_history.values_mut() {
+                history.retain(|existing| existing != path);
+            }
+        }
+        if self.selected_note.as_deref() == Some(path) && !still_open_in_any_group {
             self.selected_note = None;
         }
 
@@ -1688,7 +1754,9 @@ impl XnoteWindow {
     fn reorder_open_editors_with_pins(&mut self) {
         let mut pinned = Vec::new();
         let mut normal = Vec::new();
-        for path in &self.open_editors {
+        let active_group_tabs = self.open_editors.clone();
+
+        for path in &active_group_tabs {
             if self.pinned_editors.contains(path) {
                 pinned.push(path.clone());
             } else {
@@ -1697,6 +1765,263 @@ impl XnoteWindow {
         }
         pinned.extend(normal);
         self.open_editors = pinned;
+    }
+
+    fn sanitize_group_interaction_state(group: &mut EditorGroup) {
+        let tab_set = group.tabs.iter().cloned().collect::<HashSet<_>>();
+        group.pinned_tabs.retain(|path| tab_set.contains(path));
+        group.note_mru =
+            Self::filtered_group_note_mru(std::mem::take(&mut group.note_mru), &group.tabs);
+    }
+
+    fn active_group_mut(&mut self) -> Option<&mut EditorGroup> {
+        self.editor_groups
+            .iter_mut()
+            .find(|group| group.id == self.active_editor_group_id)
+    }
+
+    fn active_group(&self) -> Option<&EditorGroup> {
+        self.editor_groups
+            .iter()
+            .find(|group| group.id == self.active_editor_group_id)
+    }
+
+    fn sync_active_group_tabs_from_open_editors(&mut self) {
+        let tabs = self.open_editors.clone();
+        let active_group_id = self.active_editor_group_id;
+        let pinned_tabs = self
+            .pinned_editors
+            .iter()
+            .filter(|path| tabs.iter().any(|tab| tab == *path))
+            .cloned()
+            .collect::<HashSet<_>>();
+        let note_mru = Self::filtered_group_note_mru(
+            self.editor_group_note_history
+                .get(&active_group_id)
+                .cloned()
+                .or_else(|| self.active_group().map(|group| group.note_mru.clone()))
+                .unwrap_or_default(),
+            &tabs,
+        );
+        self.editor_group_note_history
+            .insert(active_group_id, note_mru.clone());
+        if let Some(group) = self.active_group_mut() {
+            group.tabs = tabs;
+            group.pinned_tabs = pinned_tabs;
+            group.note_mru = note_mru;
+            Self::sanitize_group_interaction_state(group);
+        }
+    }
+
+    fn filtered_group_note_mru(raw: VecDeque<String>, tabs: &[String]) -> VecDeque<String> {
+        let tab_set = tabs.iter().cloned().collect::<HashSet<_>>();
+        let mut out = VecDeque::new();
+        for path in raw {
+            if tab_set.contains(&path) && !out.iter().any(|existing| existing == &path) {
+                out.push_back(path);
+            }
+        }
+        while out.len() > EDITOR_GROUP_MRU_CAPACITY {
+            out.pop_front();
+        }
+        out
+    }
+
+    fn apply_active_group_interaction_state(&mut self) {
+        if let Some((group_id, tabs, pinned_tabs, note_mru)) = self.active_group().map(|group| {
+            (
+                group.id,
+                group.tabs.clone(),
+                group.pinned_tabs.clone(),
+                group.note_mru.clone(),
+            )
+        }) {
+            self.pinned_editors = pinned_tabs
+                .into_iter()
+                .filter(|path| tabs.iter().any(|tab| tab == path))
+                .collect();
+            self.editor_group_note_history
+                .insert(group_id, Self::filtered_group_note_mru(note_mru, &tabs));
+        }
+    }
+
+    fn restore_active_group_runtime_state(&mut self) {
+        let Some((tabs, saved)) = self
+            .active_group()
+            .map(|group| (group.tabs.clone(), group.view_state.sanitize()))
+        else {
+            self.open_editors.clear();
+            self.pinned_editors.clear();
+            self.editor_group_note_history
+                .insert(self.active_editor_group_id, VecDeque::new());
+            return;
+        };
+
+        self.open_editors = tabs;
+        self.editor_view_mode = saved.mode;
+        self.editor_split_ratio = saved.split_ratio;
+        self.editor_split_direction = saved.split_direction;
+        self.editor_split_saved_mode = saved.split_saved_mode;
+        self.apply_active_group_interaction_state();
+        self.reorder_open_editors_with_pins();
+        self.sync_active_group_tabs_from_open_editors();
+    }
+
+    fn normalize_editor_group_weights(&mut self) {
+        let group_len = self.editor_groups.len().max(1);
+        let min_total = EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH * group_len as f32;
+        let target_total = self
+            .editor_group_target_total_width
+            .max(EDITOR_GROUP_INITIAL_TOTAL_WIDTH)
+            .max(min_total);
+        self.editor_group_width_weights =
+            self.normalized_editor_group_weights_snapshot_for_total(group_len, target_total);
+        self.editor_group_target_total_width = target_total;
+    }
+
+    fn normalized_editor_group_weights_snapshot(&self, group_len: usize) -> Vec<f32> {
+        self.normalized_editor_group_weights_snapshot_for_total(
+            group_len,
+            self.editor_group_target_total_width,
+        )
+    }
+
+    fn normalized_editor_group_weights_snapshot_for_total(
+        &self,
+        group_len: usize,
+        target_total_width: f32,
+    ) -> Vec<f32> {
+        let group_len = group_len.max(1);
+        let min = EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH;
+        let min_total = min * group_len as f32;
+        let target_total = target_total_width
+            .max(EDITOR_GROUP_INITIAL_TOTAL_WIDTH)
+            .max(min_total);
+
+        let mut raw = Vec::with_capacity(group_len);
+        for ix in 0..group_len {
+            let candidate = self
+                .editor_group_width_weights
+                .get(ix)
+                .copied()
+                .unwrap_or(1.0);
+            let normalized = if candidate.is_finite() && candidate > 0.0 {
+                candidate
+            } else {
+                1.0
+            };
+            raw.push(normalized);
+        }
+
+        let raw_sum = raw.iter().sum::<f32>();
+        let normalized_ratios = if raw_sum > f32::EPSILON {
+            raw.into_iter()
+                .map(|value| value / raw_sum)
+                .collect::<Vec<_>>()
+        } else {
+            vec![1.0 / group_len as f32; group_len]
+        };
+
+        let remaining = (target_total - min_total).max(0.0);
+        let mut next = Vec::with_capacity(group_len);
+        for ratio in normalized_ratios {
+            next.push(min + remaining * ratio);
+        }
+        next
+    }
+
+    fn sync_editor_group_weights_for_render(&mut self, group_len: usize, target_total_width: f32) {
+        let group_len = group_len.max(1);
+        let min_total = EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH * group_len as f32;
+        let target_total = target_total_width
+            .max(EDITOR_GROUP_INITIAL_TOTAL_WIDTH)
+            .max(min_total);
+        self.editor_group_target_total_width = target_total;
+        if self.editor_group_drag.is_none() {
+            self.editor_group_width_weights =
+                self.normalized_editor_group_weights_snapshot_for_total(group_len, target_total);
+        }
+    }
+
+    fn begin_editor_group_drag(
+        &mut self,
+        split_index: usize,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        self.normalize_editor_group_weights();
+        let start_width = self
+            .editor_group_width_weights
+            .get(split_index)
+            .copied()
+            .unwrap_or(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH);
+        let pair_total = start_width
+            + self
+                .editor_group_width_weights
+                .get(split_index + 1)
+                .copied()
+                .unwrap_or(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH);
+        self.editor_group_drag = Some(SplitterDrag {
+            kind: SplitterKind::EditorGroup,
+            start_x: event.position.x,
+            start_width: px(start_width),
+            group_split_index: Some(split_index),
+            group_pair_total: Some(pair_total),
+        });
+        cx.notify();
+    }
+
+    fn end_editor_group_drag(&mut self, cx: &mut Context<Self>) {
+        if self.editor_group_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn on_editor_group_drag_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.editor_group_drag else {
+            return;
+        };
+        let Some(split_index) = drag.group_split_index else {
+            return;
+        };
+        let Some(total) = drag.group_pair_total else {
+            return;
+        };
+
+        if self.editor_groups.len() < 2 || split_index + 1 >= self.editor_groups.len() {
+            return;
+        }
+
+        self.normalize_editor_group_weights();
+        let delta = f32::from(event.position.x - drag.start_x);
+        let left_start = f32::from(drag.start_width);
+        let min = EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH;
+        let next_left = (left_start + delta).clamp(min, (total - min).max(min));
+        let next_right = (total - next_left).max(min);
+
+        if let Some(weight) = self.editor_group_width_weights.get_mut(split_index) {
+            *weight = next_left;
+        }
+        if let Some(weight) = self.editor_group_width_weights.get_mut(split_index + 1) {
+            *weight = next_right;
+        }
+        self.editor_group_target_total_width = self.editor_group_width_weights.iter().sum();
+
+        cx.notify();
+    }
+
+    fn on_editor_group_drag_mouse_up(
+        &mut self,
+        _event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_editor_group_drag(cx);
     }
 
     fn toggle_pin_editor(&mut self, path: &str, cx: &mut Context<Self>) {
@@ -1708,6 +2033,7 @@ impl XnoteWindow {
             self.status = SharedString::from("Tab pinned");
         }
         self.reorder_open_editors_with_pins();
+        self.sync_active_group_tabs_from_open_editors();
         cx.notify();
     }
 
@@ -1765,6 +2091,7 @@ impl XnoteWindow {
         }
         self.open_editors.insert(insert_ix, dragged);
         self.reorder_open_editors_with_pins();
+        self.sync_active_group_tabs_from_open_editors();
     }
 
     fn handle_tab_drop(
@@ -1813,11 +2140,12 @@ impl XnoteWindow {
             return;
         }
 
-        if !self.open_editors.iter().any(|path| path == &note_path) {
-            self.open_editors.push(note_path.clone());
-        }
-
         for group in &mut self.editor_groups {
+            if group.id != target_group_id {
+                group.tabs.retain(|path| path != &note_path);
+                group.pinned_tabs.remove(&note_path);
+                group.note_mru.retain(|path| path != &note_path);
+            }
             if group.id != target_group_id && group.note_path.as_deref() == Some(note_path.as_str())
             {
                 group.note_path = None;
@@ -1829,18 +2157,31 @@ impl XnoteWindow {
             .iter_mut()
             .find(|group| group.id == target_group_id)
         {
+            if !group.tabs.iter().any(|path| path == &note_path) {
+                group.tabs.push(note_path.clone());
+            }
             group.note_path = Some(note_path.clone());
+            if self.pinned_editors.contains(&note_path) {
+                group.pinned_tabs.insert(note_path.clone());
+            }
+            group.note_mru.retain(|path| path != &note_path);
+            group.note_mru.push_back(note_path.clone());
+            while group.note_mru.len() > EDITOR_GROUP_MRU_CAPACITY {
+                group.note_mru.pop_front();
+            }
+            Self::sanitize_group_interaction_state(group);
         }
 
         self.active_editor_group_id = target_group_id;
         self.touch_group_mru(target_group_id);
+        self.restore_active_group_runtime_state();
         self.open_note(note_path, cx);
     }
 
     fn group_id_for_note_path(&self, note_path: &str) -> Option<u64> {
         self.editor_groups
             .iter()
-            .find(|group| group.note_path.as_deref() == Some(note_path))
+            .find(|group| group.tabs.iter().any(|path| path == note_path))
             .map(|group| group.id)
     }
 
@@ -1850,9 +2191,17 @@ impl XnoteWindow {
         };
 
         self.ensure_active_group_exists();
+        self.normalize_editor_group_weights();
         let Some(active_ix) = self.active_group_index() else {
             return;
         };
+
+        let source_weight = self
+            .editor_group_width_weights
+            .get(active_ix)
+            .copied()
+            .unwrap_or(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH)
+            .max(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH * 2.0);
 
         let target_group_id = if active_ix + 1 < self.editor_groups.len() {
             self.editor_groups[active_ix + 1].id
@@ -1864,8 +2213,22 @@ impl XnoteWindow {
                 EditorGroup {
                     id: new_id,
                     note_path: None,
+                    tabs: Vec::new(),
+                    pinned_tabs: HashSet::new(),
+                    note_mru: VecDeque::new(),
+                    view_state: default_editor_group_view_state(),
                 },
             );
+            self.normalize_editor_group_weights();
+            let left = (source_weight * 0.5).max(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH);
+            let right = (source_weight - left).max(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH);
+            if let Some(weight) = self.editor_group_width_weights.get_mut(active_ix) {
+                *weight = left;
+            }
+            if let Some(weight) = self.editor_group_width_weights.get_mut(active_ix + 1) {
+                *weight = right;
+            }
+            self.editor_group_target_total_width = self.editor_group_width_weights.iter().sum();
             new_id
         };
 
@@ -2031,6 +2394,13 @@ impl XnoteWindow {
         while history.len() > EDITOR_GROUP_MRU_CAPACITY {
             history.pop_front();
         }
+        if let Some(group) = self
+            .editor_groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+        {
+            group.note_mru = Self::filtered_group_note_mru(history.clone(), &group.tabs);
+        }
     }
 
     fn swap_group_note_history(&mut self, group_id: u64, cx: &mut Context<Self>) {
@@ -2110,18 +2480,25 @@ impl XnoteWindow {
             .and_then(|group| group.note_path.clone());
 
         self.editor_groups.retain(|group| group.id == active);
+        self.normalize_editor_group_weights();
         self.prune_group_mru();
         self.active_editor_group_id = active;
         self.touch_group_mru(active);
+        self.restore_active_group_runtime_state();
         self.open_note_path = active_note.clone();
         self.selected_note = active_note.clone();
 
-        if let Some(path) = active_note {
-            self.restore_tab_view_state_or_default(&path);
-        }
-
         self.status = SharedString::from("Other editor groups closed");
         cx.notify();
+    }
+
+    fn refresh_active_group_after_external_layout_mutation(&mut self) {
+        if let Some(group) = self.active_group() {
+            self.open_editors = group.tabs.clone();
+        }
+        self.apply_active_group_interaction_state();
+        self.reorder_open_editors_with_pins();
+        self.sync_active_group_tabs_from_open_editors();
     }
 
     fn close_groups_to_right(&mut self, cx: &mut Context<Self>) {
@@ -2134,9 +2511,11 @@ impl XnoteWindow {
         }
 
         self.editor_groups.truncate(active_ix + 1);
+        self.normalize_editor_group_weights();
         self.prune_group_mru();
         let active = self.active_editor_group_id;
         self.touch_group_mru(active);
+        self.restore_active_group_runtime_state();
         let active_note = self
             .editor_groups
             .iter()
@@ -2144,10 +2523,6 @@ impl XnoteWindow {
             .and_then(|group| group.note_path.clone());
         self.open_note_path = active_note.clone();
         self.selected_note = active_note.clone();
-
-        if let Some(path) = active_note {
-            self.restore_tab_view_state_or_default(&path);
-        }
 
         self.status = SharedString::from("Editor groups to the right closed");
         cx.notify();
@@ -2288,6 +2663,158 @@ impl XnoteWindow {
         }
     }
 
+    fn apply_restored_group_layout_to_open_editors(&mut self, cx: &mut Context<Self>) {
+        self.ensure_active_group_exists();
+        let target_len = self.editor_groups.len().max(1);
+        let available_paths = self
+            .explorer_all_note_paths
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let persisted_note_paths = self
+            .editor_groups
+            .iter()
+            .map(|group| group.note_path.clone())
+            .collect::<Vec<_>>();
+        let persisted_view_states = self
+            .editor_groups
+            .iter()
+            .map(|group| group.view_state.sanitize())
+            .collect::<Vec<_>>();
+        let persisted_pinned_tabs = self
+            .editor_groups
+            .iter()
+            .map(|group| group.pinned_tabs.clone())
+            .collect::<Vec<_>>();
+        let persisted_note_mru = self
+            .editor_groups
+            .iter()
+            .map(|group| group.note_mru.clone())
+            .collect::<Vec<_>>();
+
+        let normalize_existing_path = |raw: Option<String>| -> Option<String> {
+            raw.and_then(|value| normalize_vault_rel_path(&value).ok())
+                .filter(|value| available_paths.contains(value))
+        };
+
+        let mut assigned_paths = HashSet::new();
+        let mut recovered_tabs = vec![Vec::<String>::new(); target_len];
+
+        for ix in 0..target_len {
+            if let Some(group) = self.editor_groups.get(ix) {
+                for raw_tab in &group.tabs {
+                    let Ok(path) = normalize_vault_rel_path(raw_tab) else {
+                        continue;
+                    };
+                    if !available_paths.contains(&path) {
+                        continue;
+                    }
+                    if !assigned_paths.insert(path.clone()) {
+                        continue;
+                    }
+                    recovered_tabs[ix].push(path);
+                }
+            }
+        }
+
+        for ix in 0..target_len {
+            if let Some(persisted_path) =
+                normalize_existing_path(persisted_note_paths.get(ix).cloned().unwrap_or_default())
+            {
+                if !recovered_tabs[ix].iter().any(|tab| tab == &persisted_path)
+                    && assigned_paths.insert(persisted_path.clone())
+                {
+                    recovered_tabs[ix].push(persisted_path);
+                }
+            }
+        }
+
+        if recovered_tabs.iter().all(|tabs| tabs.is_empty()) && !self.open_editors.is_empty() {
+            for (ix, raw_path) in self.open_editors.clone().into_iter().enumerate() {
+                let Ok(path) = normalize_vault_rel_path(&raw_path) else {
+                    continue;
+                };
+                if !available_paths.contains(&path) {
+                    continue;
+                }
+                if !assigned_paths.insert(path.clone()) {
+                    continue;
+                }
+                let group_ix = ix.min(target_len.saturating_sub(1));
+                recovered_tabs[group_ix].push(path);
+            }
+        }
+
+        for ix in 0..target_len {
+            if let Some(group) = self.editor_groups.get_mut(ix) {
+                group.view_state = persisted_view_states
+                    .get(ix)
+                    .copied()
+                    .unwrap_or_else(default_editor_group_view_state)
+                    .sanitize();
+                group.tabs = recovered_tabs[ix].clone();
+                group.pinned_tabs = persisted_pinned_tabs
+                    .get(ix)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|path| group.tabs.iter().any(|tab| tab == path))
+                    .collect();
+                group.note_mru = Self::filtered_group_note_mru(
+                    persisted_note_mru.get(ix).cloned().unwrap_or_default(),
+                    &group.tabs,
+                );
+                Self::sanitize_group_interaction_state(group);
+
+                let persisted = normalize_existing_path(
+                    persisted_note_paths.get(ix).cloned().unwrap_or_default(),
+                );
+
+                group.note_path = match persisted {
+                    Some(path) if group.tabs.iter().any(|tab| tab == &path) => Some(path),
+                    _ => group.tabs.last().cloned(),
+                };
+            }
+        }
+
+        if self
+            .editor_groups
+            .iter()
+            .all(|group| group.id != self.active_editor_group_id)
+        {
+            self.active_editor_group_id = self.editor_groups[0].id;
+        }
+
+        if let Some((tabs, note_path, saved)) = self.active_group().map(|group| {
+            (
+                group.tabs.clone(),
+                group.note_path.clone(),
+                group.view_state.sanitize(),
+            )
+        }) {
+            self.open_editors = tabs;
+            self.open_note_path = note_path.clone();
+            self.selected_note = note_path;
+            self.editor_view_mode = saved.mode;
+            self.editor_split_ratio = saved.split_ratio;
+            self.editor_split_direction = saved.split_direction;
+            self.editor_split_saved_mode = saved.split_saved_mode;
+        }
+        self.apply_active_group_interaction_state();
+        self.reorder_open_editors_with_pins();
+        self.sync_active_group_tabs_from_open_editors();
+
+        self.prune_group_mru();
+        if !self.editor_group_mru.contains(&self.active_editor_group_id) {
+            self.editor_group_mru.push_back(self.active_editor_group_id);
+        }
+        self.normalize_editor_group_weights();
+
+        if let Some(path) = self.open_note_path.clone() {
+            self.open_note(path, cx);
+        }
+    }
+
     fn apply_loaded_note_content(
         &mut self,
         note_path: &str,
@@ -2333,9 +2860,14 @@ impl XnoteWindow {
             self.editor_groups.push(EditorGroup {
                 id,
                 note_path: None,
+                tabs: Vec::new(),
+                pinned_tabs: HashSet::new(),
+                note_mru: VecDeque::new(),
+                view_state: default_editor_group_view_state(),
             });
             self.active_editor_group_id = id;
         }
+        self.normalize_editor_group_weights();
     }
 
     fn active_group_index(&self) -> Option<usize> {
@@ -2355,6 +2887,8 @@ impl XnoteWindow {
 
         self.active_editor_group_id = group_id;
         self.touch_group_mru(group_id);
+        self.restore_active_group_runtime_state();
+
         if let Some(group) = self.editor_groups.iter().find(|group| group.id == group_id) {
             let target = group.note_path.clone();
             self.selected_note = target.clone();
@@ -2365,7 +2899,7 @@ impl XnoteWindow {
                     return;
                 }
                 self.open_note_path = Some(path.clone());
-                self.restore_tab_view_state_or_default(&path);
+                self.sync_active_group_note_path();
             } else {
                 self.open_note_path = None;
                 self.open_note_loading = false;
@@ -2378,7 +2912,6 @@ impl XnoteWindow {
                 self.editor_is_selecting = false;
                 self.editor_preferred_x = None;
                 self.editor_layout = None;
-                self.editor_view_mode = EditorViewMode::Edit;
             }
         }
         cx.notify();
@@ -2387,12 +2920,21 @@ impl XnoteWindow {
     fn sync_active_group_note_path(&mut self) {
         if let Some(ix) = self.active_group_index() {
             self.editor_groups[ix].note_path = self.open_note_path.clone();
+            self.editor_groups[ix].view_state = self.current_tab_view_state();
+            self.editor_groups[ix].tabs = self.open_editors.clone();
         }
     }
 
     fn split_active_editor_group(&mut self, cx: &mut Context<Self>) {
         self.ensure_active_group_exists();
         let source_ix = self.active_group_index().unwrap_or(0);
+        self.normalize_editor_group_weights();
+        let source_weight = self
+            .editor_group_width_weights
+            .get(source_ix)
+            .copied()
+            .unwrap_or(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH)
+            .max(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH * 2.0);
         let source_note = self
             .editor_groups
             .get(source_ix)
@@ -2405,18 +2947,34 @@ impl XnoteWindow {
             EditorGroup {
                 id: new_id,
                 note_path: source_note,
+                tabs: self.open_editors.clone(),
+                pinned_tabs: self.pinned_editors.clone(),
+                note_mru: self
+                    .editor_group_note_history
+                    .get(&self.active_editor_group_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                view_state: self.current_tab_view_state(),
             },
         );
+        self.normalize_editor_group_weights();
+        let left = (source_weight * 0.5).max(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH);
+        let right = (source_weight - left).max(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH);
+        if let Some(weight) = self.editor_group_width_weights.get_mut(source_ix) {
+            *weight = left;
+        }
+        if let Some(weight) = self.editor_group_width_weights.get_mut(source_ix + 1) {
+            *weight = right;
+        }
+        self.editor_group_target_total_width = self.editor_group_width_weights.iter().sum();
         self.active_editor_group_id = new_id;
         self.touch_group_mru(new_id);
+        self.restore_active_group_runtime_state();
         self.open_note_path = self
             .editor_groups
             .get(source_ix + 1)
             .and_then(|group| group.note_path.clone());
         self.selected_note = self.open_note_path.clone();
-        if let Some(path) = self.open_note_path.clone() {
-            self.restore_tab_view_state_or_default(&path);
-        }
         cx.notify();
     }
 
@@ -2433,7 +2991,23 @@ impl XnoteWindow {
             return;
         };
 
+        self.normalize_editor_group_weights();
+        let removed_weight = if ix < self.editor_group_width_weights.len() {
+            self.editor_group_width_weights.remove(ix)
+        } else {
+            EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH
+        };
         self.editor_groups.remove(ix);
+        self.normalize_editor_group_weights();
+        if let Some(prev) = ix
+            .checked_sub(1)
+            .and_then(|p| self.editor_group_width_weights.get_mut(p))
+        {
+            *prev += removed_weight;
+        } else if let Some(first) = self.editor_group_width_weights.first_mut() {
+            *first += removed_weight;
+        }
+        self.editor_group_target_total_width = self.editor_group_width_weights.iter().sum();
         self.prune_group_mru();
         self.ensure_active_group_exists();
         if self.active_editor_group_id == group_id {
@@ -2452,10 +3026,8 @@ impl XnoteWindow {
         {
             self.open_note_path = group.note_path.clone();
             self.selected_note = group.note_path.clone();
-            if let Some(path) = self.open_note_path.clone() {
-                self.restore_tab_view_state_or_default(&path);
-            }
         }
+        self.restore_active_group_runtime_state();
 
         cx.notify();
     }
@@ -2609,6 +3181,93 @@ impl XnoteWindow {
         if let Some(direction) = layout.editor_split_direction.as_deref() {
             self.editor_split_direction = EditorSplitDirection::from_tag(direction);
         }
+
+        if let Some(group_count_raw) = layout.editor_group_count {
+            let group_count = usize::from(group_count_raw.clamp(1, 8));
+            self.editor_groups.clear();
+            self.editor_group_width_weights.clear();
+
+            let mut restored_weights = layout
+                .editor_group_width_weights_px
+                .unwrap_or_default()
+                .into_iter()
+                .map(|value| (value as f32).max(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH))
+                .collect::<Vec<_>>();
+
+            let legacy_compact_width = restored_weights
+                .iter()
+                .all(|value| *value <= EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH + 1.0);
+
+            if restored_weights.len() < group_count {
+                restored_weights.resize(
+                    group_count,
+                    EDITOR_GROUP_INITIAL_TOTAL_WIDTH / group_count as f32,
+                );
+            } else if restored_weights.len() > group_count {
+                restored_weights.truncate(group_count);
+            }
+
+            if restored_weights.is_empty() || legacy_compact_width {
+                restored_weights =
+                    vec![EDITOR_GROUP_INITIAL_TOTAL_WIDTH / group_count as f32; group_count];
+            }
+
+            let min_total = EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH * group_count as f32;
+            self.editor_group_target_total_width = restored_weights
+                .iter()
+                .sum::<f32>()
+                .max(EDITOR_GROUP_INITIAL_TOTAL_WIDTH)
+                .max(min_total);
+
+            self.editor_group_width_weights = restored_weights;
+            self.editor_group_mru.clear();
+            self.editor_group_note_history.clear();
+            let persisted_modes = layout.editor_group_view_modes.unwrap_or_default();
+            let persisted_active_paths = layout.editor_group_active_note_paths.unwrap_or_default();
+            let persisted_group_tabs = layout.editor_group_tabs.unwrap_or_default();
+            let persisted_group_pinned_tabs = layout.editor_group_pinned_tabs.unwrap_or_default();
+            let persisted_group_note_mru = layout.editor_group_note_mru.unwrap_or_default();
+
+            for ix in 0..group_count {
+                let id = (ix as u64) + 1;
+                let mut view_state = default_editor_group_view_state();
+                if let Some(mode_tag) = persisted_modes.get(ix) {
+                    view_state.mode = EditorViewMode::from_tag(mode_tag);
+                    view_state = view_state.sanitize();
+                }
+                let tabs = persisted_group_tabs.get(ix).cloned().unwrap_or_default();
+                let pinned_tabs = persisted_group_pinned_tabs
+                    .get(ix)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                let note_mru = persisted_group_note_mru
+                    .get(ix)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect::<VecDeque<_>>();
+                self.editor_groups.push(EditorGroup {
+                    id,
+                    note_path: persisted_active_paths.get(ix).cloned().unwrap_or_default(),
+                    tabs,
+                    pinned_tabs,
+                    note_mru,
+                    view_state,
+                });
+                if let Some(group) = self.editor_groups.last_mut() {
+                    Self::sanitize_group_interaction_state(group);
+                }
+                self.editor_group_mru.push_back(id);
+            }
+
+            let active_ix = usize::from(layout.editor_active_group_index.unwrap_or(0))
+                .min(group_count.saturating_sub(1));
+            self.active_editor_group_id = (active_ix as u64) + 1;
+            self.next_editor_group_id = (group_count as u64).saturating_add(1).max(2);
+            self.normalize_editor_group_weights();
+        }
     }
 
     fn window_layout_snapshot(&self, window: &Window) -> WindowLayoutSettings {
@@ -2641,6 +3300,58 @@ impl XnoteWindow {
             (self.editor_split_ratio.clamp(0.0, 1.0) * EDITOR_SPLIT_RATIO_SCALE).round() as u16,
         );
         layout.editor_split_direction = Some(self.editor_split_direction.to_tag().to_string());
+        layout.editor_group_count = Some(self.editor_groups.len().clamp(1, 8) as u8);
+        layout.editor_active_group_index = Some(self.active_group_index().unwrap_or(0) as u8);
+        let group_len = self.editor_groups.len().max(1);
+        let min_total = EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH * group_len as f32;
+        let persisted_total = self
+            .editor_group_target_total_width
+            .max(EDITOR_GROUP_INITIAL_TOTAL_WIDTH)
+            .max(min_total);
+        layout.editor_group_width_weights_px = Some(
+            self.normalized_editor_group_weights_snapshot_for_total(group_len, persisted_total)
+                .into_iter()
+                .map(|value| value.round().max(1.0) as u32)
+                .collect(),
+        );
+        layout.editor_group_view_modes = Some(
+            self.editor_groups
+                .iter()
+                .map(|group| group.view_state.sanitize().mode.to_tag().to_string())
+                .collect(),
+        );
+        layout.editor_group_active_note_paths = Some(
+            self.editor_groups
+                .iter()
+                .map(|group| group.note_path.clone())
+                .collect(),
+        );
+        layout.editor_group_tabs = Some(
+            self.editor_groups
+                .iter()
+                .map(|group| group.tabs.clone())
+                .collect(),
+        );
+        layout.editor_group_pinned_tabs = Some(
+            self.editor_groups
+                .iter()
+                .map(|group| {
+                    group
+                        .tabs
+                        .iter()
+                        .filter(|path| group.pinned_tabs.contains(*path))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+        );
+        layout.editor_group_note_mru = Some(
+            self.editor_groups
+                .iter()
+                .map(|group| Self::filtered_group_note_mru(group.note_mru.clone(), &group.tabs))
+                .map(|mru| mru.into_iter().collect::<Vec<_>>())
+                .collect(),
+        );
 
         layout
     }
@@ -2656,6 +3367,10 @@ impl XnoteWindow {
     }
 
     fn remember_current_tab_view_state(&mut self) {
+        let state = self.current_tab_view_state();
+        if let Some(group) = self.active_group_mut() {
+            group.view_state = state;
+        }
         if let Some(path) = self.open_note_path.clone() {
             self.editor_tab_view_state
                 .insert(path, self.current_tab_view_state());
@@ -2672,8 +3387,12 @@ impl XnoteWindow {
             return;
         }
 
-        self.editor_view_mode = EditorViewMode::Edit;
-        self.editor_split_saved_mode = EditorViewMode::Edit;
+        let fallback = self
+            .active_group()
+            .map(|group| group.view_state.sanitize())
+            .unwrap_or_else(default_editor_group_view_state);
+        self.editor_view_mode = fallback.mode;
+        self.editor_split_saved_mode = fallback.split_saved_mode;
         self.editor_split_ratio = self
             .editor_split_ratio
             .clamp(EDITOR_SPLIT_MIN_RATIO, EDITOR_SPLIT_MAX_RATIO);
@@ -3047,11 +3766,14 @@ impl XnoteWindow {
         let start_width = match kind {
             SplitterKind::PanelShell => self.panel_shell_width,
             SplitterKind::Workspace => self.workspace_width,
+            SplitterKind::EditorGroup => px(0.),
         };
         self.splitter_drag = Some(SplitterDrag {
             kind,
             start_x: event.position.x,
             start_width,
+            group_split_index: None,
+            group_pair_total: None,
         });
         cx.notify();
     }
@@ -3138,6 +3860,7 @@ impl XnoteWindow {
                 self.workspace_saved_width = next;
                 cx.notify();
             }
+            SplitterKind::EditorGroup => return,
         }
     }
 
@@ -5878,13 +6601,23 @@ impl XnoteWindow {
                     if group.note_path.as_deref() == Some(from.as_str()) {
                         group.note_path = Some(to.clone());
                     }
+                    for tab in &mut group.tabs {
+                        if tab == from {
+                            *tab = to.clone();
+                        }
+                    }
+                    if group.pinned_tabs.remove(from) {
+                        group.pinned_tabs.insert(to.clone());
+                    }
+                    for path in group.note_mru.iter_mut() {
+                        if path == from {
+                            *path = to.clone();
+                        }
+                    }
+                    Self::sanitize_group_interaction_state(group);
                 }
 
-                for path in &mut self.open_editors {
-                    if path == from {
-                        *path = to.clone();
-                    }
-                }
+                self.refresh_active_group_after_external_layout_mutation();
 
                 if let Some(state) = self.editor_tab_view_state.remove(from) {
                     self.editor_tab_view_state.insert(to.clone(), state);
@@ -5948,11 +6681,15 @@ impl XnoteWindow {
                     self.pending_markdown_parse_nonce = 0;
                 }
                 for group in &mut self.editor_groups {
+                    group.tabs.retain(|tab| tab != path);
+                    group.pinned_tabs.remove(path);
+                    group.note_mru.retain(|existing| existing != path);
+                    Self::sanitize_group_interaction_state(group);
                     if group.note_path.as_deref() == Some(path.as_str()) {
                         group.note_path = None;
                     }
                 }
-                self.open_editors.retain(|editor_path| editor_path != path);
+                self.refresh_active_group_after_external_layout_mutation();
                 self.editor_tab_view_state.remove(path);
                 self.folder_notes
                     .entry(folder_of_note_path(path))
@@ -7160,8 +7897,6 @@ impl XnoteWindow {
                 &mut self.explorer_folder_children,
                 &mut self.folder_notes,
             );
-            self.open_editors
-                .retain(|editor_path| editor_path != note_path);
             self.pinned_editors.remove(note_path);
             self.evict_note_content_cache_path(note_path);
             for history in self.editor_group_note_history.values_mut() {
@@ -7179,10 +7914,12 @@ impl XnoteWindow {
                 self.editor_buffer = None;
                 self.open_note_loading = false;
                 self.open_note_dirty = false;
-                self.editor_view_mode = EditorViewMode::Edit;
-                self.editor_split_saved_mode = EditorViewMode::Edit;
             }
             for group in &mut self.editor_groups {
+                group.tabs.retain(|tab| tab != note_path);
+                group.pinned_tabs.remove(note_path);
+                group.note_mru.retain(|existing| existing != note_path);
+                Self::sanitize_group_interaction_state(group);
                 if group.note_path.as_deref() == Some(note_path.as_str()) {
                     group.note_path = None;
                 }
@@ -7196,6 +7933,26 @@ impl XnoteWindow {
                 keep
             });
         }
+
+        let active_snapshot = self.active_group().map(|group| {
+            (
+                group.tabs.clone(),
+                group.note_path.is_none(),
+                group.view_state.sanitize(),
+            )
+        });
+        if let Some((tabs, note_empty, saved)) = active_snapshot {
+            self.open_editors = tabs;
+            if note_empty {
+                self.editor_view_mode = saved.mode;
+                self.editor_split_ratio = saved.split_ratio;
+                self.editor_split_direction = saved.split_direction;
+                self.editor_split_saved_mode = saved.split_saved_mode;
+            }
+        }
+        self.apply_active_group_interaction_state();
+        self.reorder_open_editors_with_pins();
+        self.sync_active_group_tabs_from_open_editors();
 
         self.explorer_folder_children.remove(folder);
         self.folder_notes.remove(folder);
@@ -7261,14 +8018,23 @@ impl XnoteWindow {
                 if group.note_path.as_deref() == Some(old_path.as_str()) {
                     group.note_path = Some(new_path.clone());
                 }
+                for tab in &mut group.tabs {
+                    if tab == old_path {
+                        *tab = new_path.clone();
+                    }
+                }
+                if group.pinned_tabs.remove(old_path) {
+                    group.pinned_tabs.insert(new_path.clone());
+                }
+                for entry in group.note_mru.iter_mut() {
+                    if entry == old_path {
+                        *entry = new_path.clone();
+                    }
+                }
+                Self::sanitize_group_interaction_state(group);
             }
             if self.selected_note.as_deref() == Some(old_path.as_str()) {
                 self.selected_note = Some(new_path.clone());
-            }
-            for open in &mut self.open_editors {
-                if open == old_path {
-                    *open = new_path.clone();
-                }
             }
             if self.pinned_editors.remove(old_path) {
                 self.pinned_editors.insert(new_path.clone());
@@ -7295,6 +8061,8 @@ impl XnoteWindow {
                 }
             }
         }
+
+        self.refresh_active_group_after_external_layout_mutation();
 
         let mut updated_paths = self.explorer_all_note_paths.as_ref().clone();
         for (old_path, new_path) in &moved_notes {
@@ -7352,9 +8120,11 @@ impl XnoteWindow {
         if !self.open_editors.iter().any(|p| p == &note_path) {
             self.open_editors.push(note_path.clone());
         }
+        self.sync_active_group_tabs_from_open_editors();
         self.open_note_path = Some(note_path.clone());
         self.sync_active_group_note_path();
         self.record_group_note_history(self.active_editor_group_id, &note_path);
+        self.sync_active_group_tabs_from_open_editors();
         let cached_content = self.cached_note_content(&note_path);
         let had_cached_content = cached_content.is_some();
         self.open_note_loading = !had_cached_content;
@@ -8495,9 +9265,7 @@ impl NoteEditorLayout {
                     wrap_width.map(|w| (w - text_x_offset).max(px(EDITOR_TEXT_MIN_WRAP_WIDTH)));
 
                 if let Some(inner) = element_state.state.borrow().as_ref() {
-                    if inner.size.is_some()
-                        && (wrap_width.is_none() || wrap_width == inner.wrap_width)
-                    {
+                    if inner.size.is_some() && wrap_width == inner.wrap_width {
                         return inner.size.unwrap();
                     }
                 }
@@ -9290,6 +10058,9 @@ impl Render for XnoteWindow {
             SidebarState::Expanded => workspace_expanded_w,
             SidebarState::Hidden => px(0.),
         };
+        let editor_surface_width =
+            (window_w - rail_w - panel_shell_width - workspace_width - splitter_w * splitter_count)
+                .max(editor_min_w);
 
         if panel_shell_state == SidebarState::Expanded
             && self.panel_shell_width != panel_shell_width
@@ -11413,9 +12184,10 @@ impl Render for XnoteWindow {
         let mode_toggle = |id: &'static str,
                            icon: &'static str,
                            mode: EditorViewMode,
-                           this: &XnoteWindow,
+                           _this: &XnoteWindow,
+                           mode_for_group: EditorViewMode,
                            cx: &mut Context<Self>| {
-            let active = this.editor_view_mode == mode;
+            let active = mode_for_group == mode;
             div()
                 .id(id)
                 .h(px(28.))
@@ -11459,11 +12231,16 @@ impl Render for XnoteWindow {
             "Loading...".to_string()
         };
 
-        let breadcrumbs = {
+        let _breadcrumbs = {
             let (folder, file) = note_path
                 .and_then(|p| p.rsplit_once('/'))
                 .map(|(f, n)| (Some(f.to_string()), n.to_string()))
                 .unwrap_or_else(|| (None, note_path.unwrap_or("").to_string()));
+
+            let active_group_mode = self
+                .active_group()
+                .map(|group| group.view_state.mode)
+                .unwrap_or(self.editor_view_mode);
 
             let mut segments = div().flex().items_center().gap(px(6.));
             if let Some(folder) = folder {
@@ -11520,6 +12297,7 @@ impl Render for XnoteWindow {
                             ICON_BRUSH,
                             EditorViewMode::Edit,
                             self,
+                            active_group_mode,
                             cx,
                         ))
                         .child(mode_toggle(
@@ -11527,12 +12305,13 @@ impl Render for XnoteWindow {
                             ICON_EYE,
                             EditorViewMode::Preview,
                             self,
+                            active_group_mode,
                             cx,
                         )),
                 )
         };
 
-        let editor_header = div()
+        let _editor_header = div()
             .h(px(64.))
             .w_full()
             .bg(rgb(ui_theme.surface_bg))
@@ -11604,6 +12383,13 @@ impl Render for XnoteWindow {
                     ),
             );
 
+        let group_count = self.editor_groups.len().max(1);
+        let group_splitter_total =
+            (group_count.saturating_sub(1) as f32) * EDITOR_GROUP_SPLITTER_WIDTH;
+        let group_target_total_width = (f32::from(editor_surface_width) - group_splitter_total)
+            .max(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH * group_count as f32);
+        self.sync_editor_group_weights_for_render(group_count, group_target_total_width);
+
         let editor_pane = |id: SharedString, interactive: bool, content: String| {
             let mut pane = div()
                 .id(id)
@@ -11636,24 +12422,6 @@ impl Render for XnoteWindow {
                     pane.child(NoteEditorElement { view: cx.entity() })
                         .into_any_element()
                 } else {
-                    let mut preview = div()
-                        .id("editor.group.preview.content")
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.));
-                    for line in content.lines() {
-                        preview = preview.child(
-                            div()
-                                .font_family("IBM Plex Mono")
-                                .text_size(px(12.))
-                                .font_weight(FontWeight(450.))
-                                .text_color(rgb(ui_theme.text_secondary))
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(SharedString::from(line.to_string())),
-                        );
-                    }
-
                     let preview_content = if content.trim().is_empty() {
                         div()
                             .font_family("IBM Plex Mono")
@@ -11663,7 +12431,15 @@ impl Render for XnoteWindow {
                             .child("No cached content yet (click to focus)")
                             .into_any_element()
                     } else {
-                        preview.into_any_element()
+                        div()
+                            .id("editor.group.preview.content")
+                            .w_full()
+                            .font_family("IBM Plex Mono")
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(450.))
+                            .text_color(rgb(ui_theme.text_secondary))
+                            .child(SharedString::from(content))
+                            .into_any_element()
                     };
 
                     pane.child(preview_content).into_any_element()
@@ -11795,7 +12571,89 @@ impl Render for XnoteWindow {
             pane.into_any_element()
         };
 
-        let group_count = self.editor_groups.len().max(1);
+        let preview_pane_for_content = |id: SharedString, content: String| {
+            let parsed = parse_markdown(&content);
+            let mut pane = div()
+                .id(id)
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .pl(px(EDITOR_SURFACE_LEFT_PADDING))
+                .pr(px(EDITOR_SURFACE_RIGHT_PADDING))
+                .py(px(10.))
+                .bg(rgb(ui_theme.surface_bg))
+                .flex()
+                .flex_col()
+                .gap(px(10.));
+
+            if parsed.blocks.is_empty() {
+                pane = pane.child(
+                    div()
+                        .font_family("IBM Plex Mono")
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(650.))
+                        .text_color(rgb(ui_theme.text_muted))
+                        .child("No markdown structure yet."),
+                );
+            } else {
+                let mut blocks = div().flex().flex_col().gap(px(8.));
+                for block in parsed.blocks.iter().take(160) {
+                    let (font_family, text_size, font_weight, text_color, prefix) = match block.kind
+                    {
+                        xnote_core::markdown::MarkdownBlockKind::Heading(level) => (
+                            "Inter",
+                            px((20_i32 - (level as i32 * 2)).max(12) as f32),
+                            FontWeight(900.),
+                            ui_theme.text_primary,
+                            "",
+                        ),
+                        xnote_core::markdown::MarkdownBlockKind::Paragraph => (
+                            "Inter",
+                            px(13.),
+                            FontWeight(600.),
+                            ui_theme.text_secondary,
+                            "",
+                        ),
+                        xnote_core::markdown::MarkdownBlockKind::CodeFence => (
+                            "IBM Plex Mono",
+                            px(12.),
+                            FontWeight(650.),
+                            ui_theme.syntax_code_text,
+                            "``` ",
+                        ),
+                        xnote_core::markdown::MarkdownBlockKind::Quote => (
+                            "Inter",
+                            px(13.),
+                            FontWeight(700.),
+                            ui_theme.syntax_quote_marker,
+                            "> ",
+                        ),
+                        xnote_core::markdown::MarkdownBlockKind::List => (
+                            "Inter",
+                            px(13.),
+                            FontWeight(650.),
+                            ui_theme.text_secondary,
+                            "• ",
+                        ),
+                    };
+
+                    blocks = blocks.child(
+                        div()
+                            .font_family(font_family)
+                            .text_size(text_size)
+                            .font_weight(font_weight)
+                            .text_color(rgb(text_color))
+                            .child(SharedString::from(format!("{prefix}{}", block.text))),
+                    );
+                }
+
+                pane = pane.child(blocks);
+            }
+
+            pane.into_any_element()
+        };
+
         let editor_body = {
             let mut row = div()
                 .id("editor.groups")
@@ -11810,17 +12668,57 @@ impl Render for XnoteWindow {
                 groups.push(EditorGroup {
                     id: self.active_editor_group_id,
                     note_path: self.open_note_path.clone(),
+                    tabs: self.open_editors.clone(),
+                    pinned_tabs: self.pinned_editors.clone(),
+                    note_mru: self
+                        .editor_group_note_history
+                        .get(&self.active_editor_group_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    view_state: self.current_tab_view_state(),
                 });
             }
+
+            let group_weights = self.normalized_editor_group_weights_snapshot(group_count);
 
             for (ix, group) in groups.iter().enumerate() {
                 let group_id = group.id;
                 let is_active_group = group_id == self.active_editor_group_id;
+                let group_mode = if is_active_group {
+                    self.editor_view_mode
+                } else {
+                    group.view_state.mode
+                };
                 let group_note_path = group.note_path.clone();
+                let group_title = group_note_path
+                    .as_deref()
+                    .map(|path| self.derive_note_title(path))
+                    .unwrap_or_else(|| "No note selected".to_string());
+                let group_path_label = group_note_path
+                    .clone()
+                    .unwrap_or_else(|| "Select a note in Explorer to open.".to_string());
+                let group_mode_label = match group_mode {
+                    EditorViewMode::Edit => "Edit",
+                    EditorViewMode::Preview => "Preview",
+                    EditorViewMode::Split => "Split",
+                };
+                let group_diag_count = if is_active_group {
+                    self.markdown_diagnostics.len()
+                } else {
+                    0
+                };
                 let group_content = group_note_path
                     .as_deref()
-                    .and_then(|path| self.note_content_cache.get(path))
-                    .cloned()
+                    .map(|path| {
+                        if self.open_note_path.as_deref() == Some(path) {
+                            self.open_note_content.clone()
+                        } else {
+                            self.note_content_cache
+                                .get(path)
+                                .cloned()
+                                .unwrap_or_default()
+                        }
+                    })
                     .unwrap_or_default();
                 let group_content = if is_active_group {
                     self.open_note_content.clone()
@@ -11831,17 +12729,39 @@ impl Render for XnoteWindow {
                         INACTIVE_GROUP_PREVIEW_MAX_LINE_CHARS,
                     )
                 };
+                let group_body = match (is_active_group, group_mode) {
+                    (true, EditorViewMode::Preview) => preview_pane(),
+                    (true, _) => editor_pane(
+                        SharedString::from("editor.pane.active"),
+                        true,
+                        group_content,
+                    ),
+                    (false, EditorViewMode::Preview) => preview_pane_for_content(
+                        SharedString::from(format!("editor.preview.group:{group_id}")),
+                        group_content,
+                    ),
+                    (false, _) => editor_pane(
+                        SharedString::from(format!("editor.pane.group:{group_id}")),
+                        false,
+                        group_content,
+                    ),
+                };
                 row = row.child(
                     div()
                         .id(ElementId::Name(SharedString::from(format!(
                             "editor.group:{group_id}"
                         ))))
-                        .flex_1()
-                        .min_w(px(EDITOR_SPLIT_MIN_PANE_WIDTH))
+                        .w(px(group_weights
+                            .get(ix)
+                            .copied()
+                            .unwrap_or(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH)))
+                        .min_w(px(EDITOR_GROUP_MIN_VISIBLE_PANE_WIDTH))
+                        .flex_shrink_0()
                         .min_h_0()
                         .h_full()
                         .flex()
                         .flex_col()
+                        .when(group_count == 1, |this| this.flex_1().w_full())
                         .border_l_1()
                         .border_color(rgb(if ix == 0 {
                             ui_theme.border
@@ -11855,76 +12775,139 @@ impl Render for XnoteWindow {
                         }))
                         .child(
                             div()
-                                .h(px(20.))
-                                .w_full()
-                                .px(px(8.))
+                                .h_full()
+                                .min_h_0()
                                 .flex()
-                                .items_center()
-                                .justify_between()
-                                .bg(rgb(if is_active_group {
-                                    ui_theme.accent_soft
-                                } else {
-                                    ui_theme.surface_alt_bg
-                                }))
+                                .flex_col()
                                 .child(
                                     div()
-                                        .font_family("IBM Plex Mono")
-                                        .text_size(px(10.))
-                                        .font_weight(FontWeight(700.))
-                                        .text_color(rgb(if is_active_group {
-                                            ui_theme.accent
-                                        } else {
-                                            ui_theme.text_muted
-                                        }))
-                                        .child(SharedString::from(format!("GROUP {}", ix + 1))),
-                                )
-                                .child(
-                                    div()
-                                        .font_family("IBM Plex Mono")
-                                        .text_size(px(10.))
-                                        .font_weight(FontWeight(700.))
-                                        .text_color(rgb(ui_theme.text_muted))
+                                        .h(px(26.))
+                                        .w_full()
+                                        .px(px(8.))
+                                        .bg(rgb(ui_theme.surface_bg))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
                                         .child(
-                                            group
-                                                .note_path
-                                                .as_ref()
-                                                .map(|p| SharedString::from(file_name(p)))
-                                                .unwrap_or_else(|| SharedString::from("Empty")),
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .font_family("IBM Plex Mono")
+                                                .text_size(px(10.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(rgb(ui_theme.text_muted))
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .child(group_path_label),
+                                        ),
+                                )
+                                .child(div().h(px(1.)).w_full().bg(rgb(ui_theme.border)))
+                                .child(
+                                    div()
+                                        .h(px(42.))
+                                        .w_full()
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_bg))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .font_family("Inter")
+                                                .text_size(px(18.))
+                                                .font_weight(FontWeight(850.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .child(group_title),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family("IBM Plex Mono")
+                                                .text_size(px(10.))
+                                                .font_weight(FontWeight(750.))
+                                                .text_color(rgb(ui_theme.text_muted))
+                                                .child(group_mode_label),
+                                        ),
+                                )
+                                .child(div().h(px(1.)).w_full().bg(rgb(ui_theme.border)))
+                                .child(group_body)
+                                .child(
+                                    div()
+                                        .h(px(24.))
+                                        .w_full()
+                                        .px(px(8.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_t_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .font_family("IBM Plex Mono")
+                                                .text_size(px(10.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(rgb(ui_theme.text_muted))
+                                                .child(SharedString::from(format!(
+                                                    "{}{}",
+                                                    if is_active_group {
+                                                        "Focused · "
+                                                    } else {
+                                                        ""
+                                                    },
+                                                    group_mode_label
+                                                ))),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family("IBM Plex Mono")
+                                                .text_size(px(10.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(rgb(ui_theme.text_muted))
+                                                .child(SharedString::from(format!(
+                                                    "Diag {}",
+                                                    group_diag_count
+                                                ))),
                                         ),
                                 ),
-                        )
-                        .child(if is_active_group {
-                            if self.editor_view_mode == EditorViewMode::Preview {
-                                preview_pane()
-                            } else {
-                                editor_pane(
-                                    SharedString::from("editor.pane.active"),
-                                    true,
-                                    group_content,
-                                )
-                            }
-                        } else {
-                            editor_pane(
-                                SharedString::from(format!("editor.pane.group:{group_id}")),
-                                false,
-                                group_content,
-                            )
-                        }),
+                        ),
                 );
 
                 if ix + 1 < group_count {
+                    let split_index = ix;
                     row = row.child(
                         div()
                             .id(ElementId::Name(SharedString::from(format!(
                                 "editor.group.separator:{}",
                                 ix + 1
                             ))))
-                            .w(px(1.))
-                            .min_w(px(1.))
-                            .max_w(px(1.))
+                            .relative()
+                            .w(px(EDITOR_GROUP_SPLITTER_WIDTH))
+                            .min_w(px(EDITOR_GROUP_SPLITTER_WIDTH))
+                            .max_w(px(EDITOR_GROUP_SPLITTER_WIDTH))
                             .h_full()
                             .flex_shrink_0()
-                            .bg(rgb(ui_theme.border)),
+                            .bg(rgb(ui_theme.app_bg))
+                            .cursor_col_resize()
+                            .hover(|this| this.bg(rgb(ui_theme.panel_bg)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                                    this.begin_editor_group_drag(split_index, ev, cx);
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px((EDITOR_GROUP_SPLITTER_WIDTH - 1.0) * 0.5))
+                                    .top_0()
+                                    .bottom_0()
+                                    .w(px(1.))
+                                    .bg(rgb(ui_theme.border)),
+                            ),
                     );
                 }
             }
@@ -11932,7 +12915,7 @@ impl Render for XnoteWindow {
             row.into_any_element()
         };
 
-        let diagnostics_panel = {
+        let _diagnostics_panel = {
             let mut panel = div()
                 .id("editor.diagnostics")
                 .h(px(112.))
@@ -12054,12 +13037,7 @@ impl Render for XnoteWindow {
             .flex_col()
             .child(tabs_bar)
             .child(div().h(px(1.)).w_full().bg(rgb(ui_theme.border)))
-            .child(breadcrumbs)
-            .child(div().h(px(1.)).w_full().bg(rgb(ui_theme.border)))
-            .child(editor_header)
-            .child(div().h(px(1.)).w_full().bg(rgb(ui_theme.border)))
-            .child(editor_body)
-            .child(diagnostics_panel);
+            .child(editor_body);
 
         let titlebar_command = div()
             .id("titlebar.command")
@@ -12419,7 +13397,8 @@ impl Render for XnoteWindow {
             );
 
         let splitter_handle = |id: &'static str, kind: SplitterKind| {
-            let active = self.splitter_drag.is_some_and(|d| d.kind == kind);
+            let active = self.splitter_drag.is_some_and(|d| d.kind == kind)
+                || self.editor_group_drag.is_some_and(|d| d.kind == kind);
             let line = rgb(ui_theme.border);
             div()
                 .id(id)
@@ -12505,6 +13484,29 @@ impl Render for XnoteWindow {
                     .on_mouse_up_out(
                         MouseButton::Left,
                         cx.listener(Self::on_active_split_drag_mouse_up),
+                    ),
+            );
+        }
+
+        if self.editor_group_drag.is_some() {
+            root = root.child(
+                div()
+                    .id("editor.group.drag_overlay")
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right(px(0.))
+                    .bg(rgba(0x00000000))
+                    .cursor_col_resize()
+                    .on_mouse_move(cx.listener(Self::on_editor_group_drag_mouse_move))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(Self::on_editor_group_drag_mouse_up),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(Self::on_editor_group_drag_mouse_up),
                     ),
             );
         }
@@ -13230,14 +14232,26 @@ mod tests {
             EditorGroup {
                 id: 1,
                 note_path: Some("notes/a.md".to_string()),
+                tabs: vec!["notes/a.md".to_string()],
+                pinned_tabs: HashSet::new(),
+                note_mru: VecDeque::new(),
+                view_state: default_editor_group_view_state(),
             },
             EditorGroup {
                 id: 2,
                 note_path: Some("notes/b.md".to_string()),
+                tabs: vec!["notes/b.md".to_string()],
+                pinned_tabs: HashSet::new(),
+                note_mru: VecDeque::new(),
+                view_state: default_editor_group_view_state(),
             },
             EditorGroup {
                 id: 3,
                 note_path: Some("notes/c.md".to_string()),
+                tabs: vec!["notes/c.md".to_string()],
+                pinned_tabs: HashSet::new(),
+                note_mru: VecDeque::new(),
+                view_state: default_editor_group_view_state(),
             },
         ];
         let active_id = 2_u64;
@@ -13834,7 +14848,51 @@ fn build_editor_highlight_spans(text: &str) -> Vec<EditorHighlightSpan> {
     }
 
     spans.retain(|span| span.range.start < span.range.end);
+    for span in &mut spans {
+        span.range = clamp_range_to_char_boundaries(text, span.range.clone());
+    }
+    spans.retain(|span| span.range.start < span.range.end);
     spans
+}
+
+fn previous_char_boundary(text: &str, index: usize) -> usize {
+    let index = index.min(text.len());
+    if text.is_char_boundary(index) {
+        return index;
+    }
+    let mut prev = 0usize;
+    for (ix, _ch) in text.char_indices() {
+        if ix >= index {
+            break;
+        }
+        prev = ix;
+    }
+    prev
+}
+
+fn next_char_boundary(text: &str, index: usize) -> usize {
+    let index = index.min(text.len());
+    if text.is_char_boundary(index) {
+        return index;
+    }
+    for (ix, _ch) in text.char_indices() {
+        if ix > index {
+            return ix;
+        }
+    }
+    text.len()
+}
+
+fn clamp_range_to_char_boundaries(text: &str, range: Range<usize>) -> Range<usize> {
+    if text.is_empty() {
+        return 0..0;
+    }
+    let start = previous_char_boundary(text, range.start);
+    let mut end = next_char_boundary(text, range.end);
+    if end < start {
+        end = start;
+    }
+    start..end.min(text.len())
 }
 
 fn markdown_heading_level(line: &str) -> Option<u8> {
@@ -13887,6 +14945,18 @@ mod editor_highlight_tests {
         let text = "a".repeat(MAX_EDITOR_HIGHLIGHT_BYTES + 16);
         let spans = build_editor_highlight_spans(&text);
         assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn highlight_spans_remain_on_char_boundaries_for_cjk() {
+        let text = "# N 撒发放\nSee [撒发](https://example.com)\n";
+        let spans = build_editor_highlight_spans(text);
+        assert!(!spans.is_empty());
+        for span in spans {
+            assert!(text.is_char_boundary(span.range.start));
+            assert!(text.is_char_boundary(span.range.end));
+            let _ = &text[span.range];
+        }
     }
 }
 
