@@ -1,8 +1,10 @@
+pub mod ai;
 pub mod command;
 pub mod editor;
 pub mod keybind;
 pub mod knowledge;
 pub mod markdown;
+pub mod note_meta;
 pub mod paths;
 pub mod plugin;
 pub mod plugin_protocol;

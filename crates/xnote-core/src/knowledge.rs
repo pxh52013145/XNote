@@ -1,3 +1,4 @@
+use crate::note_meta::normalize_note_id;
 use crate::paths::normalize_vault_rel_path;
 use crate::vault::{NoteEntry, Vault};
 use anyhow::Result;
@@ -45,8 +46,10 @@ pub struct SearchOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteMetadata {
+    pub note_id: Option<String>,
     pub title: String,
     pub frontmatter: HashMap<String, String>,
+    pub aliases: Vec<String>,
     pub links: Vec<String>,
     pub tags: Vec<String>,
 }
@@ -54,7 +57,9 @@ pub struct NoteMetadata {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteSummary {
     pub path: String,
+    pub note_id: Option<String>,
     pub title: String,
+    pub aliases: Vec<String>,
     pub links: Vec<String>,
     pub tags: Vec<String>,
 }
@@ -63,8 +68,12 @@ pub struct NoteSummary {
 struct IndexedNote {
     path: String,
     path_lower: String,
+    note_id: Option<String>,
+    note_id_lower: Option<String>,
     title: String,
     title_lower: String,
+    aliases: Vec<String>,
+    aliases_lower: Vec<String>,
     tags: Vec<String>,
     tags_lower: Vec<String>,
     links: Vec<String>,
@@ -76,6 +85,7 @@ struct IndexedNote {
 pub struct KnowledgeIndex {
     notes: HashMap<String, IndexedNote>,
     inverted: HashMap<String, HashSet<String>>,
+    note_id_to_path: HashMap<String, String>,
 }
 
 impl KnowledgeIndex {
@@ -98,19 +108,30 @@ impl KnowledgeIndex {
         let note = self.notes.get(&path)?;
         Some(NoteSummary {
             path: note.path.clone(),
+            note_id: note.note_id.clone(),
             title: note.title.clone(),
+            aliases: note.aliases.clone(),
             links: note.links.clone(),
             tags: note.tags.clone(),
         })
     }
 
     pub fn resolve_link_target(&self, raw_link: &str) -> Option<String> {
-        let query = raw_link.trim();
+        let query = normalize_note_link_target(raw_link)?;
         if query.is_empty() {
             return None;
         }
 
         let query_lower = query.to_lowercase();
+        if let Some(note_id) = query_lower.strip_prefix("id:") {
+            if let Some(path) = self.note_id_to_path.get(note_id.trim()) {
+                return Some(path.clone());
+            }
+        }
+        if let Some(path) = self.note_id_to_path.get(query_lower.trim()) {
+            return Some(path.clone());
+        }
+
         let mut candidates = vec![query_lower.clone()];
         if !query_lower.ends_with(".md") {
             candidates.push(format!("{query_lower}.md"));
@@ -133,6 +154,7 @@ impl KnowledgeIndex {
                 note.path_lower == candidate
                     || note.path_lower.ends_with(&format!("/{candidate}"))
                     || note.title_lower == candidate
+                    || note.aliases_lower.iter().any(|alias| alias == &candidate)
                     || note
                         .path_lower
                         .rsplit_once('/')
@@ -167,6 +189,13 @@ impl KnowledgeIndex {
         targets.insert(file_name);
         targets.insert(stem);
         targets.insert(target.title_lower.clone());
+        if let Some(note_id) = target.note_id_lower.as_ref() {
+            targets.insert(note_id.clone());
+            targets.insert(format!("id:{note_id}"));
+        }
+        for alias in &target.aliases_lower {
+            targets.insert(alias.clone());
+        }
 
         let mut out = Vec::new();
         for note in self.notes.values() {
@@ -211,6 +240,9 @@ impl KnowledgeIndex {
         };
 
         if let Some(existing) = self.notes.remove(&path) {
+            if let Some(note_id) = existing.note_id_lower {
+                self.note_id_to_path.remove(&note_id);
+            }
             for token in existing.token_set {
                 if let Some(paths) = self.inverted.get_mut(&token) {
                     paths.remove(&path);
@@ -229,7 +261,13 @@ impl KnowledgeIndex {
 
         let metadata = parse_note_metadata(&content, &path);
         let path_lower = path.to_lowercase();
+        let note_id_lower = metadata.note_id.as_ref().map(|value| value.to_lowercase());
         let title_lower = metadata.title.to_lowercase();
+        let aliases_lower = metadata
+            .aliases
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect::<Vec<_>>();
         let tags_lower = metadata
             .tags
             .iter()
@@ -243,7 +281,13 @@ impl KnowledgeIndex {
 
         let mut token_set = HashSet::new();
         token_set.extend(tokenize(&path_lower));
+        if let Some(note_id) = note_id_lower.as_ref() {
+            token_set.extend(tokenize(note_id));
+        }
         token_set.extend(tokenize(&title_lower));
+        for alias in &aliases_lower {
+            token_set.extend(tokenize(alias));
+        }
         for tag in &tags_lower {
             token_set.extend(tokenize(tag));
         }
@@ -267,10 +311,14 @@ impl KnowledgeIndex {
         self.notes.insert(
             path.clone(),
             IndexedNote {
-                path,
+                path: path.clone(),
                 path_lower,
+                note_id: metadata.note_id.clone(),
+                note_id_lower: note_id_lower.clone(),
                 title: metadata.title.clone(),
                 title_lower,
+                aliases: metadata.aliases.clone(),
+                aliases_lower,
                 tags: metadata.tags.clone(),
                 tags_lower,
                 links: metadata.links.clone(),
@@ -278,6 +326,10 @@ impl KnowledgeIndex {
                 token_set,
             },
         );
+
+        if let Some(note_id) = note_id_lower {
+            self.note_id_to_path.insert(note_id, path);
+        }
 
         Ok(())
     }
@@ -493,6 +545,9 @@ fn score_note_for_query(note: &IndexedNote, query_lower: &str, query_tokens: &[S
     if note.title_lower == query_lower {
         score += 220;
     }
+    if note.note_id_lower.as_deref() == Some(query_lower) {
+        score += 240;
+    }
     if note.path_lower == query_lower {
         score += 180;
     }
@@ -559,6 +614,14 @@ fn score_note_for_query(note: &IndexedNote, query_lower: &str, query_tokens: &[S
     for token in query_tokens {
         if note.token_set.contains(token) {
             score += 8;
+        }
+    }
+
+    if let Some(note_id) = note.note_id_lower.as_deref() {
+        if note_id.starts_with(query_lower) {
+            score += 36;
+        } else if note_id.contains(query_lower) {
+            score += 18;
         }
     }
 
@@ -669,15 +732,75 @@ fn is_word_boundary_at(haystack: &str, index: usize) -> bool {
 pub fn parse_note_metadata(content: &str, fallback_path: &str) -> NoteMetadata {
     let title = extract_title(content).unwrap_or_else(|| file_name_from_path(fallback_path));
     let frontmatter = extract_frontmatter(content);
-    let links = extract_wikilinks(content);
+    let note_id = extract_note_id(&frontmatter);
+    let aliases = extract_aliases(&frontmatter, &title);
+    let mut links = extract_wikilinks(content);
+    links.extend(extract_markdown_links(content));
+    links = dedup_links_preserve_order(links);
     let tags = extract_tags(content);
 
     NoteMetadata {
+        note_id,
         title,
         frontmatter,
+        aliases,
         links,
         tags,
     }
+}
+
+fn frontmatter_value<'a>(frontmatter: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    frontmatter.get(key).map(String::as_str).or_else(|| {
+        frontmatter
+            .iter()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value.as_str())
+    })
+}
+
+fn extract_note_id(frontmatter: &HashMap<String, String>) -> Option<String> {
+    let raw = frontmatter_value(frontmatter, "id")?.trim();
+    normalize_note_id(raw).ok()
+}
+
+fn extract_aliases(frontmatter: &HashMap<String, String>, title: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(raw) = frontmatter_value(frontmatter, "aliases")
+        .or_else(|| frontmatter_value(frontmatter, "alias"))
+    {
+        out.extend(parse_alias_values(raw));
+    }
+
+    let title_trimmed = title.trim();
+    out.retain(|alias| {
+        let alias_trimmed = alias.trim();
+        !alias_trimmed.is_empty() && !alias_trimmed.eq_ignore_ascii_case(title_trimmed)
+    });
+    dedup_links_preserve_order(out)
+}
+
+fn parse_alias_values(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let content = trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(trimmed);
+
+    content
+        .split(',')
+        .map(|part| {
+            part.trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim()
+                .to_string()
+        })
+        .filter(|alias| !alias.is_empty())
+        .collect()
 }
 
 fn extract_title(content: &str) -> Option<String> {
@@ -700,22 +823,67 @@ fn extract_frontmatter(content: &str) -> HashMap<String, String> {
         return out;
     }
 
-    for line in lines {
-        let line = line.trim();
+    let mut list_key: Option<String> = None;
+    let mut list_values: Vec<String> = Vec::new();
+
+    for raw_line in lines {
+        let line = raw_line.trim();
         if line == "---" {
+            flush_frontmatter_list(&mut out, &mut list_key, &mut list_values);
             break;
         }
+
+        if list_key.is_some() {
+            if line.starts_with("- ") {
+                let value = line.trim_start_matches('-').trim();
+                if !value.is_empty() {
+                    list_values.push(value.to_string());
+                }
+                continue;
+            }
+
+            if !raw_line.starts_with(' ') && !raw_line.starts_with('\t') {
+                flush_frontmatter_list(&mut out, &mut list_key, &mut list_values);
+            } else {
+                continue;
+            }
+        }
+
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
         let key = key.trim();
         let value = value.trim();
         if !key.is_empty() {
-            out.insert(key.to_string(), value.to_string());
+            if value.is_empty() {
+                list_key = Some(key.to_string());
+                list_values.clear();
+            } else {
+                out.insert(key.to_string(), value.to_string());
+            }
         }
     }
 
+    flush_frontmatter_list(&mut out, &mut list_key, &mut list_values);
+
     out
+}
+
+fn flush_frontmatter_list(
+    out: &mut HashMap<String, String>,
+    list_key: &mut Option<String>,
+    list_values: &mut Vec<String>,
+) {
+    let Some(key) = list_key.take() else {
+        return;
+    };
+
+    if list_values.is_empty() {
+        out.insert(key, String::new());
+    } else {
+        out.insert(key, format!("[{}]", list_values.join(", ")));
+    }
+    list_values.clear();
 }
 
 fn extract_wikilinks(content: &str) -> Vec<String> {
@@ -727,12 +895,110 @@ fn extract_wikilinks(content: &str) -> Vec<String> {
             break;
         };
         let raw = after[..end].trim();
-        if !raw.is_empty() {
-            out.push(raw.to_string());
+        if let Some(target) = normalize_note_link_target(raw) {
+            out.push(target);
         }
         remain = &after[end + 2..];
     }
     out
+}
+
+fn extract_markdown_links(content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = content.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            let Some(close_bracket_rel) = content[i + 1..].find(']') else {
+                i += 1;
+                continue;
+            };
+            let close_bracket = i + 1 + close_bracket_rel;
+
+            if close_bracket + 1 >= bytes.len() || bytes[close_bracket + 1] != b'(' {
+                i = close_bracket.saturating_add(1);
+                continue;
+            }
+
+            let Some(close_paren_rel) = content[close_bracket + 2..].find(')') else {
+                i = close_bracket.saturating_add(2);
+                continue;
+            };
+            let close_paren = close_bracket + 2 + close_paren_rel;
+
+            if i > 0 && bytes[i - 1] == b'!' {
+                i = close_paren.saturating_add(1);
+                continue;
+            }
+
+            let raw_target = content[close_bracket + 2..close_paren].trim();
+            if let Some(target) = normalize_note_link_target(raw_target) {
+                out.push(target);
+            }
+
+            i = close_paren.saturating_add(1);
+            continue;
+        }
+
+        i += 1;
+    }
+
+    out
+}
+
+fn dedup_links_preserve_order(links: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+
+    for link in links {
+        let key = link.to_lowercase();
+        if seen.insert(key) {
+            out.push(link);
+        }
+    }
+
+    out
+}
+
+fn normalize_note_link_target(raw: &str) -> Option<String> {
+    let trimmed = raw
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_alias = trimmed
+        .split_once('|')
+        .map(|(target, _)| target)
+        .unwrap_or(trimmed)
+        .trim();
+    if without_alias.is_empty() {
+        return None;
+    }
+
+    let without_heading = without_alias
+        .split_once('#')
+        .map(|(target, _)| target)
+        .unwrap_or(without_alias)
+        .trim();
+    if without_heading.is_empty() {
+        return None;
+    }
+
+    let lower = without_heading.to_ascii_lowercase();
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("xnote://")
+    {
+        return None;
+    }
+
+    Some(without_heading.to_string())
 }
 
 fn extract_tags(content: &str) -> Vec<String> {
@@ -795,14 +1061,107 @@ Body with [[Linked/Note]] and #tag_one #tag-two.
 "#;
 
         let meta = parse_note_metadata(content, "notes/Fallback.md");
+        assert_eq!(meta.note_id, None);
         assert_eq!(meta.title, "My Title");
         assert_eq!(
             meta.frontmatter.get("aliases").map(String::as_str),
             Some("Demo")
         );
+        assert!(meta.aliases.contains(&"Demo".to_string()));
         assert_eq!(meta.links, vec!["Linked/Note"]);
         assert!(meta.tags.contains(&"tag_one".to_string()));
         assert!(meta.tags.contains(&"tag-two".to_string()));
+    }
+
+    #[test]
+    fn parse_metadata_extracts_aliases_from_frontmatter_lists() {
+        let content = r#"---
+aliases: ["A", "B Alias", ""]
+---
+# Title
+Body.
+"#;
+        let meta = parse_note_metadata(content, "notes/Fallback.md");
+        assert_eq!(meta.note_id, None);
+        assert_eq!(meta.aliases, vec!["A".to_string(), "B Alias".to_string()]);
+    }
+
+    #[test]
+    fn parse_metadata_extracts_normalized_note_id() {
+        let content = r#"---
+id: 01HABC_123
+aliases: ["Guide"]
+---
+# Title
+"#;
+        let meta = parse_note_metadata(content, "notes/Fallback.md");
+        assert_eq!(meta.note_id, Some("01HABC_123".to_string()));
+    }
+
+    #[test]
+    fn parse_metadata_extracts_aliases_from_frontmatter_block_lists() {
+        let content = r#"---
+aliases:
+  - "Project Guide"
+  - Guide
+---
+# Title
+Body.
+"#;
+        let meta = parse_note_metadata(content, "notes/Fallback.md");
+        assert_eq!(
+            meta.aliases,
+            vec!["Project Guide".to_string(), "Guide".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_metadata_normalizes_wikilink_aliases_and_headings() {
+        let content =
+            "# T\n[[notes/Alpha|Alias]] and [[notes/Beta#Heading]] and [[notes/Gamma.md#H|Shown]]";
+        let meta = parse_note_metadata(content, "notes/Fallback.md");
+        assert_eq!(
+            meta.links,
+            vec![
+                "notes/Alpha".to_string(),
+                "notes/Beta".to_string(),
+                "notes/Gamma.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_metadata_extracts_markdown_links_and_skips_external_or_images() {
+        let content = "# T\n[Alpha](notes/Alpha.md) [Beta](notes/Beta.md#H) ![img](assets/a.png) [Web](https://example.com)";
+        let meta = parse_note_metadata(content, "notes/Fallback.md");
+        assert!(meta.links.contains(&"notes/Alpha.md".to_string()));
+        assert!(meta.links.contains(&"notes/Beta.md".to_string()));
+        assert!(!meta.links.iter().any(|link| link.contains("http")));
+        assert!(!meta.links.iter().any(|link| link.contains("assets/a.png")));
+    }
+
+    #[test]
+    fn parse_metadata_keeps_spaces_in_link_targets() {
+        let content =
+            "# T\n[[Project Guide]] and [Guide](notes/Project Guide.md#Summary) and [[Project Guide|Alias]]";
+        let meta = parse_note_metadata(content, "notes/Fallback.md");
+        assert!(meta.links.contains(&"Project Guide".to_string()));
+        assert!(meta.links.contains(&"notes/Project Guide.md".to_string()));
+    }
+
+    #[test]
+    fn parse_metadata_dedups_links_preserving_order() {
+        let content =
+            "# T\n[[notes/Alpha]] [a](notes/Alpha.md) [[notes/Alpha|Again]] [[notes/Beta]]";
+        let meta = parse_note_metadata(content, "notes/Fallback.md");
+        assert_eq!(
+            meta.links,
+            vec![
+                "notes/Alpha".to_string(),
+                "notes/Beta".to_string(),
+                "notes/Alpha.md".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -990,7 +1349,85 @@ Body with [[Linked/Note]] and #tag_one #tag-two.
 
         let summary = index.note_summary("notes/Beta.md").expect("summary");
         assert_eq!(summary.title, "Beta");
+        assert!(summary.aliases.is_empty());
         assert!(summary.tags.iter().any(|tag| tag == "topic"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn resolve_and_backlinks_support_frontmatter_aliases() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "xnote_core_knowledge_alias_links_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(temp_dir.join("notes")).expect("create test dir");
+
+        fs::write(
+            temp_dir.join("notes/Alpha.md"),
+            "# Alpha\nBody with [[Project Guide]]",
+        )
+        .expect("write Alpha");
+        fs::write(
+            temp_dir.join("notes/Beta.md"),
+            "---\naliases: [\"Project Guide\", \"Guide\"]\n---\n# Beta\n",
+        )
+        .expect("write Beta");
+
+        let vault = Vault::open(&temp_dir).expect("open vault");
+        let entries = vault.fast_scan_notes().expect("scan notes");
+        let index = KnowledgeIndex::build_from_entries(&vault, &entries).expect("build index");
+
+        assert_eq!(
+            index.resolve_link_target("Project Guide"),
+            Some("notes/Beta.md".to_string())
+        );
+
+        let backlinks = index.backlinks_for("notes/Beta.md", 10);
+        assert!(backlinks.iter().any(|path| path == "notes/Alpha.md"));
+
+        let summary = index.note_summary("notes/Beta.md").expect("summary");
+        assert!(summary.aliases.iter().any(|alias| alias == "Project Guide"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn resolve_and_backlinks_support_note_id_links() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "xnote_core_knowledge_note_id_links_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(temp_dir.join("notes")).expect("create test dir");
+
+        fs::write(
+            temp_dir.join("notes/Alpha.md"),
+            "# Alpha\nBody with [[id:01HNOTE_BETA]]",
+        )
+        .expect("write Alpha");
+        fs::write(
+            temp_dir.join("notes/Beta.md"),
+            "---\nid: 01HNOTE_BETA\n---\n# Beta\n",
+        )
+        .expect("write Beta");
+
+        let vault = Vault::open(&temp_dir).expect("open vault");
+        let entries = vault.fast_scan_notes().expect("scan notes");
+        let index = KnowledgeIndex::build_from_entries(&vault, &entries).expect("build index");
+
+        assert_eq!(
+            index.resolve_link_target("id:01HNOTE_BETA"),
+            Some("notes/Beta.md".to_string())
+        );
+        assert_eq!(
+            index.resolve_link_target("01HNOTE_BETA"),
+            Some("notes/Beta.md".to_string())
+        );
+
+        let backlinks = index.backlinks_for("notes/Beta.md", 10);
+        assert!(backlinks.iter().any(|path| path == "notes/Alpha.md"));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

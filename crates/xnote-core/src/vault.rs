@@ -1,3 +1,4 @@
+use crate::note_meta::{normalize_note_id, NoteMetaV1};
 use crate::paths::{
     join_inside, normalize_folder_rel_path, normalize_vault_rel_path, to_posix_path,
 };
@@ -34,6 +35,19 @@ impl Vault {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn ensure_knowledge_structure(&self) -> Result<()> {
+        std::fs::create_dir_all(self.root.join("notes")).with_context(|| "create notes folder")?;
+        std::fs::create_dir_all(self.root.join("attachments"))
+            .with_context(|| "create attachments folder")?;
+        std::fs::create_dir_all(self.root.join(".xnote").join("order"))
+            .with_context(|| "create .xnote/order folder")?;
+        std::fs::create_dir_all(self.root.join(".xnote").join("meta"))
+            .with_context(|| "create .xnote/meta folder")?;
+        std::fs::create_dir_all(self.root.join(".xnote").join("cache"))
+            .with_context(|| "create .xnote/cache folder")?;
+        Ok(())
     }
 
     /// Stage A: fast scan for markdown files.
@@ -154,6 +168,51 @@ impl Vault {
             .with_context(|| format!("write order file: {:?}", order_path))?;
         Ok(())
     }
+
+    pub fn note_meta_file_path(&self, note_id: &str) -> Result<PathBuf> {
+        let note_id = normalize_note_id(note_id)?;
+        let mut path = self.root.join(".xnote").join("meta");
+        path.push(format!("{note_id}.json"));
+        Ok(path)
+    }
+
+    pub fn load_note_meta(&self, note_id: &str) -> Result<Option<NoteMetaV1>> {
+        let path = self.note_meta_file_path(note_id)?;
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(err).with_context(|| format!("read note meta file: {:?}", path));
+            }
+        };
+
+        let meta: NoteMetaV1 = serde_json::from_str(&content)
+            .with_context(|| format!("parse note meta json: {:?}", path))?;
+        meta.validate()
+            .with_context(|| format!("validate note meta file: {:?}", path))?;
+        Ok(Some(meta))
+    }
+
+    pub fn save_note_meta(&self, note_meta: &NoteMetaV1) -> Result<()> {
+        note_meta.validate()?;
+        let path = self.note_meta_file_path(&note_meta.id)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| "create note meta parent dir")?;
+        }
+        let content = note_meta.canonical_json()?;
+        std::fs::write(&path, content)
+            .with_context(|| format!("write note meta file: {:?}", path))?;
+        Ok(())
+    }
+
+    pub fn delete_note_meta(&self, note_id: &str) -> Result<()> {
+        let path = self.note_meta_file_path(note_id)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err).with_context(|| format!("delete note meta file: {:?}", path)),
+        }
+    }
 }
 
 pub fn parse_order_md(content: &str) -> Vec<String> {
@@ -194,6 +253,7 @@ pub fn format_order_md(folder: &str, ordered_paths: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::note_meta::{NoteMetaRelation, NoteMetaTarget, NoteMetaV1};
     use std::fs;
 
     #[test]
@@ -254,6 +314,79 @@ mod tests {
 
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].path, "notes/content/a.md");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn ensure_knowledge_structure_bootstraps_expected_folders() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "xnote_core_vault_ensure_structure_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("create root");
+
+        let vault = Vault::open(&temp_dir).expect("open vault");
+        vault
+            .ensure_knowledge_structure()
+            .expect("ensure structure");
+
+        assert!(temp_dir.join("notes").is_dir());
+        assert!(temp_dir.join("attachments").is_dir());
+        assert!(temp_dir.join(".xnote/order").is_dir());
+        assert!(temp_dir.join(".xnote/meta").is_dir());
+        assert!(temp_dir.join(".xnote/cache").is_dir());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn note_meta_roundtrip_and_delete() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "xnote_core_vault_note_meta_roundtrip_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("create root");
+
+        let vault = Vault::open(&temp_dir).expect("open vault");
+        vault
+            .ensure_knowledge_structure()
+            .expect("ensure structure");
+
+        let mut meta = NoteMetaV1::new("01HNOTE").expect("new note meta");
+        meta.updated_at = "2026-02-10T12:00:00Z".to_string();
+        meta.relations.push(NoteMetaRelation {
+            relation_type: "xnote.explains".to_string(),
+            to: NoteMetaTarget {
+                kind: "knowledge".to_string(),
+                id: "01HTARGET".to_string(),
+                anchor: None,
+                extra: serde_json::Map::new(),
+            },
+            note: None,
+            created_at: None,
+            created_by: None,
+            extra: serde_json::Map::new(),
+        });
+        meta.pins.notes.push("01HTARGET".to_string());
+
+        vault.save_note_meta(&meta).expect("save note meta");
+        let loaded = vault
+            .load_note_meta("01HNOTE")
+            .expect("load note meta")
+            .expect("note meta exists");
+
+        assert_eq!(loaded.id, "01HNOTE");
+        assert_eq!(loaded.relations.len(), 1);
+        assert_eq!(loaded.pins.notes, vec!["01HTARGET"]);
+
+        vault.delete_note_meta("01HNOTE").expect("delete note meta");
+        assert!(vault
+            .load_note_meta("01HNOTE")
+            .expect("load after delete")
+            .is_none());
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

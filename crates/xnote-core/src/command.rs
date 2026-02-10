@@ -12,6 +12,7 @@ pub enum CommandId {
     ToggleSplit,
     FocusExplorer,
     FocusSearch,
+    AiRewriteSelection,
 }
 
 impl CommandId {
@@ -29,6 +30,7 @@ impl CommandId {
             Self::ToggleSplit => "toggle_split",
             Self::FocusExplorer => "focus_explorer",
             Self::FocusSearch => "focus_search",
+            Self::AiRewriteSelection => "ai_rewrite_selection",
         }
     }
 
@@ -54,6 +56,7 @@ impl std::str::FromStr for CommandId {
             "toggle_split" => Ok(Self::ToggleSplit),
             "focus_explorer" => Ok(Self::FocusExplorer),
             "focus_search" => Ok(Self::FocusSearch),
+            "ai_rewrite_selection" => Ok(Self::AiRewriteSelection),
             _ => Err(()),
         }
     }
@@ -139,6 +142,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         label_key: "cmd.focus_search.label",
         detail_key: "cmd.focus_search.detail",
         default_shortcut: "Alt+2",
+    },
+    CommandSpec {
+        id: CommandId::AiRewriteSelection,
+        label_key: "cmd.ai_rewrite_selection.label",
+        detail_key: "cmd.ai_rewrite_selection.detail",
+        default_shortcut: "",
     },
 ];
 
