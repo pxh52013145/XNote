@@ -66,6 +66,14 @@ fn en_us_dict() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         ("cmd.open_vault.label", "Open vault"),
         ("cmd.open_vault.detail", "Choose a folder as a vault"),
+        (
+            "cmd.open_vault_in_new_window.label",
+            "Open vault in new window",
+        ),
+        (
+            "cmd.open_vault_in_new_window.detail",
+            "Choose a folder and open it in a new app window",
+        ),
         ("cmd.quick_open.label", "Quick Open"),
         ("cmd.quick_open.detail", "Search and open a note by path"),
         ("cmd.command_palette.label", "Command palette"),
@@ -149,6 +157,11 @@ fn zh_cn_dict() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         ("cmd.open_vault.label", "打开仓库"),
         ("cmd.open_vault.detail", "选择一个文件夹作为仓库"),
+        ("cmd.open_vault_in_new_window.label", "在新窗口打开仓库"),
+        (
+            "cmd.open_vault_in_new_window.detail",
+            "选择文件夹并在新应用窗口中打开",
+        ),
         ("cmd.quick_open.label", "快速打开"),
         ("cmd.quick_open.detail", "按路径搜索并打开笔记"),
         ("cmd.command_palette.label", "命令面板"),

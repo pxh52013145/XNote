@@ -20,6 +20,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -707,6 +708,12 @@ enum PaletteMode {
     Search,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VaultPromptTarget {
+    CurrentWindow,
+    NewWindow,
+}
+
 struct PaletteCommandSpec {
     id: CommandId,
     icon: &'static str,
@@ -776,6 +783,10 @@ const PALETTE_COMMANDS: &[PaletteCommandSpec] = &[
     PaletteCommandSpec {
         id: CommandId::OpenVault,
         icon: ICON_FOLDER_OPEN,
+    },
+    PaletteCommandSpec {
+        id: CommandId::OpenVaultInNewWindow,
+        icon: ICON_VAULT,
     },
     PaletteCommandSpec {
         id: CommandId::QuickOpen,
@@ -1084,6 +1095,7 @@ struct XnoteWindow {
     pending_palette_nonce: u64,
     palette_backdrop_armed_until: Option<Instant>,
     vault_prompt_open: bool,
+    vault_prompt_target: VaultPromptTarget,
     vault_prompt_needs_focus: bool,
     vault_prompt_value: String,
     vault_prompt_error: Option<SharedString>,
@@ -1185,6 +1197,7 @@ impl XnoteWindow {
                 PluginActivationEvent::OnCommand(CommandId::CommandPalette),
                 PluginActivationEvent::OnCommand(CommandId::QuickOpen),
                 PluginActivationEvent::OnCommand(CommandId::OpenVault),
+                PluginActivationEvent::OnCommand(CommandId::OpenVaultInNewWindow),
                 PluginActivationEvent::OnCommand(CommandId::ReloadVault),
                 PluginActivationEvent::OnCommand(CommandId::NewNote),
                 PluginActivationEvent::OnCommand(CommandId::SaveFile),
@@ -1298,6 +1311,7 @@ impl XnoteWindow {
             pending_palette_nonce: 0,
             palette_backdrop_armed_until: None,
             vault_prompt_open: false,
+            vault_prompt_target: VaultPromptTarget::CurrentWindow,
             vault_prompt_needs_focus: false,
             vault_prompt_value: String::new(),
             vault_prompt_error: None,
@@ -2725,7 +2739,7 @@ impl XnoteWindow {
         true
     }
 
-    fn open_vault_prompt(&mut self, cx: &mut Context<Self>) {
+    fn open_vault_prompt_with_target(&mut self, target: VaultPromptTarget, cx: &mut Context<Self>) {
         let default_value = match &self.vault_state {
             VaultState::Opened { vault, .. } => vault.root().to_string_lossy().to_string(),
             VaultState::Opening { path } => path.to_string_lossy().to_string(),
@@ -2735,6 +2749,7 @@ impl XnoteWindow {
         };
 
         self.vault_prompt_open = true;
+        self.vault_prompt_target = target;
         self.vault_prompt_needs_focus = true;
         self.vault_prompt_value = default_value;
         self.vault_prompt_error = None;
@@ -2747,6 +2762,104 @@ impl XnoteWindow {
         self.module_switcher_open = false;
         self.module_switcher_backdrop_armed_until = None;
         cx.notify();
+    }
+
+    fn open_vault_prompt(&mut self, cx: &mut Context<Self>) {
+        self.open_vault_prompt_with_target(VaultPromptTarget::CurrentWindow, cx);
+    }
+
+    fn open_vault_prompt_new_window(&mut self, cx: &mut Context<Self>) {
+        self.open_vault_prompt_with_target(VaultPromptTarget::NewWindow, cx);
+    }
+
+    fn open_vault_in_new_window(&mut self, vault_path: &Path, cx: &mut Context<Self>) {
+        let current_exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(err) => {
+                self.status = SharedString::from(format!(
+                    "Open in new window failed: cannot resolve executable ({err})"
+                ));
+                cx.notify();
+                return;
+            }
+        };
+
+        let mut command = ProcessCommand::new(current_exe);
+        command.arg("--vault");
+        command.arg(vault_path.as_os_str());
+
+        match command.spawn() {
+            Ok(_child) => {
+                self.status = SharedString::from(format!(
+                    "Opened vault in new window: {}",
+                    vault_path.display()
+                ));
+            }
+            Err(err) => {
+                self.status = SharedString::from(format!("Open in new window failed: {err}"));
+            }
+        }
+        cx.notify();
+    }
+
+    fn cycle_vault_prompt_target(&mut self, cx: &mut Context<Self>) {
+        self.vault_prompt_target = match self.vault_prompt_target {
+            VaultPromptTarget::CurrentWindow => VaultPromptTarget::NewWindow,
+            VaultPromptTarget::NewWindow => VaultPromptTarget::CurrentWindow,
+        };
+        self.vault_prompt_error = None;
+        cx.notify();
+    }
+
+    fn apply_vault_prompt_open(
+        &mut self,
+        path: PathBuf,
+        target: VaultPromptTarget,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_vault_prompt(cx);
+        match target {
+            VaultPromptTarget::CurrentWindow => {
+                self.open_vault(path, cx).detach();
+            }
+            VaultPromptTarget::NewWindow => {
+                self.open_vault_in_new_window(&path, cx);
+            }
+        }
+    }
+
+    fn vault_prompt_mode_hint(&self) -> &'static str {
+        match self.vault_prompt_target {
+            VaultPromptTarget::CurrentWindow => "Current window",
+            VaultPromptTarget::NewWindow => "New window",
+        }
+    }
+
+    fn vault_prompt_help_hint(&self) -> &'static str {
+        "Enter open · Ctrl+Shift+O toggle target · Esc cancel"
+    }
+
+    fn on_vault_prompt_submit(&mut self, cx: &mut Context<Self>) {
+        let value = self.vault_prompt_value.trim().to_string();
+        if value.is_empty() {
+            self.vault_prompt_error = Some(SharedString::from(
+                self.i18n.text("prompt.enter_vault_path"),
+            ));
+            cx.notify();
+            return;
+        }
+
+        let path = PathBuf::from(value);
+        if !path.is_dir() {
+            self.vault_prompt_error = Some(SharedString::from(
+                self.i18n.text("prompt.vault_path_not_folder"),
+            ));
+            cx.notify();
+            return;
+        }
+
+        let target = self.vault_prompt_target;
+        self.apply_vault_prompt_open(path, target, cx);
     }
 
     fn open_module_switcher(&mut self, cx: &mut Context<Self>) {
@@ -2795,6 +2908,7 @@ impl XnoteWindow {
 
     fn close_vault_prompt(&mut self, cx: &mut Context<Self>) {
         self.vault_prompt_open = false;
+        self.vault_prompt_target = VaultPromptTarget::CurrentWindow;
         self.vault_prompt_needs_focus = false;
         self.vault_prompt_error = None;
         self.vault_prompt_backdrop_armed_until = None;
@@ -3822,14 +3936,44 @@ impl XnoteWindow {
 
     fn command_label(&self, id: CommandId) -> String {
         self.command_spec_by_id(id)
-            .map(|spec| self.i18n.text(spec.label_key))
-            .unwrap_or_else(|| id.as_str().to_string())
+            .map(|spec| {
+                let text = self.i18n.text(spec.label_key);
+                if text == spec.label_key {
+                    self.command_label_fallback(id)
+                } else {
+                    text
+                }
+            })
+            .unwrap_or_else(|| self.command_label_fallback(id))
     }
 
     fn command_detail(&self, id: CommandId) -> String {
         self.command_spec_by_id(id)
-            .map(|spec| self.i18n.text(spec.detail_key))
-            .unwrap_or_default()
+            .map(|spec| {
+                let text = self.i18n.text(spec.detail_key);
+                if text == spec.detail_key {
+                    self.command_detail_fallback(id)
+                } else {
+                    text
+                }
+            })
+            .unwrap_or_else(|| self.command_detail_fallback(id))
+    }
+
+    fn command_label_fallback(&self, id: CommandId) -> String {
+        match id {
+            CommandId::OpenVaultInNewWindow => "Open vault in new window".to_string(),
+            _ => id.as_str().to_string(),
+        }
+    }
+
+    fn command_detail_fallback(&self, id: CommandId) -> String {
+        match id {
+            CommandId::OpenVaultInNewWindow => {
+                "Choose a folder and open it in a new app window".to_string()
+            }
+            _ => String::new(),
+        }
     }
 
     fn command_shortcut(&self, id: CommandId) -> String {
@@ -4336,6 +4480,10 @@ impl XnoteWindow {
                 self.close_palette(cx);
                 self.open_vault_prompt(cx);
             }
+            CommandId::OpenVaultInNewWindow => {
+                self.close_palette(cx);
+                self.open_vault_prompt_new_window(cx);
+            }
             CommandId::QuickOpen => self.open_palette(PaletteMode::QuickOpen, cx),
             CommandId::CommandPalette => self.open_palette(PaletteMode::Commands, cx),
             CommandId::Settings => {
@@ -4724,7 +4872,13 @@ impl XnoteWindow {
 
     fn on_vault_prompt_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let ctrl = ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform;
+        let shift = ev.keystroke.modifiers.shift;
         let key = ev.keystroke.key.to_lowercase();
+
+        if ctrl && shift && key.as_str() == "o" {
+            self.cycle_vault_prompt_target(cx);
+            return;
+        }
 
         if ctrl {
             match key.as_str() {
@@ -4766,26 +4920,7 @@ impl XnoteWindow {
                 cx.notify();
             }
             "enter" | "return" => {
-                let value = self.vault_prompt_value.trim().to_string();
-                if value.is_empty() {
-                    self.vault_prompt_error = Some(SharedString::from(
-                        self.i18n.text("prompt.enter_vault_path"),
-                    ));
-                    cx.notify();
-                    return;
-                }
-
-                let path = PathBuf::from(value);
-                if !path.is_dir() {
-                    self.vault_prompt_error = Some(SharedString::from(
-                        self.i18n.text("prompt.vault_path_not_folder"),
-                    ));
-                    cx.notify();
-                    return;
-                }
-
-                self.close_vault_prompt(cx);
-                self.open_vault(path, cx).detach();
+                self.on_vault_prompt_submit(cx);
             }
             _ => {
                 if ctrl {
@@ -5957,6 +6092,8 @@ impl XnoteWindow {
         };
 
         let error = self.vault_prompt_error.clone();
+        let mode_hint = self.vault_prompt_mode_hint();
+        let help_hint = self.vault_prompt_help_hint();
 
         let prompt_box = div()
             .w(px(720.))
@@ -5981,6 +6118,14 @@ impl XnoteWindow {
                             .font_weight(FontWeight(800.))
                             .text_color(rgb(ui_theme.text_muted))
                             .child("OPEN VAULT"),
+                    )
+                    .child(
+                        div()
+                            .font_family("IBM Plex Mono")
+                            .text_size(px(10.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(rgb(ui_theme.text_subtle))
+                            .child(SharedString::from(format!("Target: {mode_hint}"))),
                     )
                     .child(
                         div()
@@ -6026,7 +6171,7 @@ impl XnoteWindow {
                             .text_size(px(11.))
                             .font_weight(FontWeight(650.))
                             .text_color(rgb(ui_theme.text_muted))
-                            .child("Enter to open · Esc to cancel"),
+                            .child(help_hint),
                     ),
             );
 
@@ -8245,6 +8390,7 @@ impl XnoteWindow {
                 CommandId::CommandPalette
                 | CommandId::QuickOpen
                 | CommandId::OpenVault
+                | CommandId::OpenVaultInNewWindow
                 | CommandId::FocusExplorer
                 | CommandId::FocusSearch
                 | CommandId::AiRewriteSelection => {
@@ -8450,6 +8596,7 @@ impl XnoteWindow {
                 CommandId::CommandPalette
                 | CommandId::QuickOpen
                 | CommandId::OpenVault
+                | CommandId::OpenVaultInNewWindow
                 | CommandId::FocusExplorer
                 | CommandId::FocusSearch
                 | CommandId::AiRewriteSelection => {
@@ -8586,6 +8733,7 @@ impl XnoteWindow {
         if let Some(command) = self.command_from_event(ev) {
             match command {
                 CommandId::OpenVault
+                | CommandId::OpenVaultInNewWindow
                 | CommandId::ReloadVault
                 | CommandId::Settings
                 | CommandId::NewNote
@@ -10061,6 +10209,7 @@ impl XnoteWindow {
                 CommandId::CommandPalette
                 | CommandId::QuickOpen
                 | CommandId::OpenVault
+                | CommandId::OpenVaultInNewWindow
                 | CommandId::ReloadVault
                 | CommandId::NewNote
                 | CommandId::Settings

@@ -1,6 +1,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CommandId {
     OpenVault,
+    OpenVaultInNewWindow,
     QuickOpen,
     CommandPalette,
     Settings,
@@ -19,6 +20,7 @@ impl CommandId {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenVault => "open_vault",
+            Self::OpenVaultInNewWindow => "open_vault_in_new_window",
             Self::QuickOpen => "quick_open",
             Self::CommandPalette => "command_palette",
             Self::Settings => "settings",
@@ -45,6 +47,7 @@ impl std::str::FromStr for CommandId {
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input.trim() {
             "open_vault" => Ok(Self::OpenVault),
+            "open_vault_in_new_window" => Ok(Self::OpenVaultInNewWindow),
             "quick_open" => Ok(Self::QuickOpen),
             "command_palette" => Ok(Self::CommandPalette),
             "settings" => Ok(Self::Settings),
@@ -76,6 +79,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         label_key: "cmd.open_vault.label",
         detail_key: "cmd.open_vault.detail",
         default_shortcut: "Ctrl+O",
+    },
+    CommandSpec {
+        id: CommandId::OpenVaultInNewWindow,
+        label_key: "cmd.open_vault_in_new_window.label",
+        detail_key: "cmd.open_vault_in_new_window.detail",
+        default_shortcut: "Ctrl+Shift+O",
     },
     CommandSpec {
         id: CommandId::QuickOpen,
