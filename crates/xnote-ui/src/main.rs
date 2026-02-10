@@ -489,6 +489,24 @@ impl WorkstationModule {
         }
     }
 
+    const fn shortcut_hint(self) -> &'static str {
+        match self {
+            Self::Knowledge => "Alt+K",
+            Self::Resources => "Alt+R",
+            Self::Inbox => "Alt+I",
+            Self::AiHub => "Alt+A",
+        }
+    }
+
+    const fn disabled_tooltip(self) -> Option<&'static str> {
+        match self {
+            Self::Knowledge => None,
+            Self::Resources => Some("Resources module is coming in next milestones"),
+            Self::Inbox => Some("Inbox module is coming in next milestones"),
+            Self::AiHub => Some("AI Hub module is coming in next milestones"),
+        }
+    }
+
     const fn icon(self) -> &'static str {
         match self {
             Self::Knowledge => ICON_FILE_TEXT,
@@ -500,6 +518,16 @@ impl WorkstationModule {
 
     const fn is_available(self) -> bool {
         matches!(self, Self::Knowledge)
+    }
+
+    fn from_shortcut_key(key: &str) -> Option<Self> {
+        match key {
+            "k" => Some(Self::Knowledge),
+            "r" => Some(Self::Resources),
+            "i" => Some(Self::Inbox),
+            "a" => Some(Self::AiHub),
+            _ => None,
+        }
     }
 }
 
@@ -2722,6 +2750,15 @@ impl XnoteWindow {
     }
 
     fn open_module_switcher(&mut self, cx: &mut Context<Self>) {
+        self.palette_open = false;
+        self.palette_backdrop_armed_until = None;
+        self.settings_open = false;
+        self.settings_language_menu_open = false;
+        self.settings_backdrop_armed_until = None;
+        self.vault_prompt_open = false;
+        self.vault_prompt_needs_focus = false;
+        self.vault_prompt_error = None;
+        self.vault_prompt_backdrop_armed_until = None;
         self.module_switcher_open = true;
         self.module_switcher_backdrop_armed_until =
             Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
@@ -2738,13 +2775,22 @@ impl XnoteWindow {
         if module.is_available() {
             self.active_module = module;
             self.status = SharedString::from(format!("Module: {}", module.label()));
+            self.close_module_switcher(cx);
         } else {
             self.status = SharedString::from(format!(
                 "{} module is not available in current MVP",
                 module.label()
             ));
+            cx.notify();
         }
-        self.close_module_switcher(cx);
+    }
+
+    fn handle_module_shortcut_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let Some(module) = WorkstationModule::from_shortcut_key(key) else {
+            return false;
+        };
+        self.select_module(module, cx);
+        true
     }
 
     fn close_vault_prompt(&mut self, cx: &mut Context<Self>) {
@@ -5470,8 +5516,10 @@ impl XnoteWindow {
         let module_item = |id: &'static str, module: WorkstationModule| {
             let active = self.active_module == module;
             let available = module.is_available();
+            let disabled = !available;
+            let shortcut_hint = module.shortcut_hint();
 
-            div()
+            let row = div()
                 .id(id)
                 .h(px(36.))
                 .w_full()
@@ -5480,13 +5528,16 @@ impl XnoteWindow {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .cursor_pointer()
                 .bg(if active {
                     rgb(ui_theme.interactive_hover)
                 } else {
                     rgba(0x00000000)
                 })
-                .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                .when(!disabled, |this| this.cursor_pointer())
+                .when(disabled, |this| this.opacity(0.82))
+                .when(!disabled, |this| {
+                    this.hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                })
                 .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                     this.select_module(module, cx);
                 }))
@@ -5521,12 +5572,45 @@ impl XnoteWindow {
                 )
                 .child(
                     div()
+                        .w(px(56.))
+                        .flex()
+                        .justify_end()
                         .font_family("IBM Plex Mono")
                         .text_size(px(10.))
                         .font_weight(FontWeight(650.))
                         .text_color(rgb(ui_theme.text_subtle))
-                        .child(module.detail()),
+                        .child(shortcut_hint),
                 )
+                .child(
+                    div()
+                        .w(px(112.))
+                        .font_family("IBM Plex Mono")
+                        .text_size(px(10.))
+                        .font_weight(FontWeight(650.))
+                        .text_color(rgb(ui_theme.text_subtle))
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(if disabled {
+                            "Coming soon"
+                        } else {
+                            module.detail()
+                        }),
+                );
+
+            if let Some(message) = module.disabled_tooltip() {
+                row.tooltip({
+                    let tooltip_message: SharedString = message.into();
+                    let tooltip_theme = ui_theme;
+                    move |_window, cx| {
+                        AnyView::from(cx.new(|_| TooltipPreview {
+                            label: tooltip_message.clone(),
+                            ui_theme: tooltip_theme,
+                        }))
+                    }
+                })
+            } else {
+                row
+            }
         };
 
         let menu = div()
@@ -5566,7 +5650,20 @@ impl XnoteWindow {
             .child(module_item(
                 "module.switcher.ai_hub",
                 WorkstationModule::AiHub,
-            ));
+            ))
+            .child(
+                div()
+                    .mt(px(4.))
+                    .px(px(10.))
+                    .pt(px(6.))
+                    .border_t_1()
+                    .border_color(rgb(ui_theme.border))
+                    .font_family("IBM Plex Mono")
+                    .text_size(px(10.))
+                    .font_weight(FontWeight(700.))
+                    .text_color(rgb(ui_theme.text_subtle))
+                    .child("Tip: Alt+K / Alt+R / Alt+I / Alt+A"),
+            );
 
         div()
             .id("module.switcher.overlay")
@@ -5577,8 +5674,14 @@ impl XnoteWindow {
             .occlude()
             .focusable()
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
-                if ev.keystroke.key.eq_ignore_ascii_case("escape") {
+                let key = ev.keystroke.key.to_lowercase();
+                if key == "escape" {
                     this.close_module_switcher(cx);
+                    return;
+                }
+
+                if ev.keystroke.modifiers.alt {
+                    this.handle_module_shortcut_key(&key, cx);
                 }
             }))
             .child(
@@ -8110,8 +8213,13 @@ impl XnoteWindow {
         }
 
         if self.module_switcher_open {
-            if ev.keystroke.key.eq_ignore_ascii_case("escape") {
+            let key = ev.keystroke.key.to_lowercase();
+            if key == "escape" {
                 self.close_module_switcher(cx);
+                return;
+            }
+            if ev.keystroke.modifiers.alt {
+                self.handle_module_shortcut_key(&key, cx);
             }
             return;
         }
@@ -8310,8 +8418,13 @@ impl XnoteWindow {
         }
 
         if self.module_switcher_open {
-            if ev.keystroke.key.eq_ignore_ascii_case("escape") {
+            let key = ev.keystroke.key.to_lowercase();
+            if key == "escape" {
                 self.close_module_switcher(cx);
+                return;
+            }
+            if ev.keystroke.modifiers.alt {
+                self.handle_module_shortcut_key(&key, cx);
             }
             return;
         }
@@ -9935,6 +10048,10 @@ impl XnoteWindow {
         if self.module_switcher_open {
             if key == "escape" {
                 self.close_module_switcher(cx);
+                return;
+            }
+            if alt {
+                self.handle_module_shortcut_key(&key, cx);
             }
             return;
         }
