@@ -887,6 +887,33 @@ enum SettingsSection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AiEndpointCheckCategory {
+    NotChecked,
+    Checking,
+    Connected,
+    Timeout,
+    Unauthorized,
+    ApiPathNotFound,
+    InvalidEndpoint,
+    NetworkError,
+    ServerError,
+    ClientError,
+    UnknownError,
+}
+
+impl AiEndpointCheckCategory {
+    const fn is_connected(self) -> bool {
+        matches!(self, Self::Connected)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AiSettingsEditField {
+    Endpoint,
+    Model,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsTheme {
     Dark,
     Light,
@@ -1092,7 +1119,9 @@ struct XnoteWindow {
     next_ai_endpoint_check_nonce: u64,
     pending_ai_endpoint_check_nonce: u64,
     ai_endpoint_check_result: Option<bool>,
+    ai_endpoint_check_category: AiEndpointCheckCategory,
     ai_endpoint_check_message: SharedString,
+    ai_endpoint_check_models: Vec<String>,
     ai_chat_input: String,
     ai_hub_cursor_offset: usize,
     ai_hub_cursor_preferred_col: Option<usize>,
@@ -1105,6 +1134,8 @@ struct XnoteWindow {
     ai_hub_connection_popup_open: bool,
     ai_hub_connection_popup_message: SharedString,
     ai_hub_connection_popup_backdrop_armed_until: Option<Instant>,
+    ai_settings_editing_field: Option<AiSettingsEditField>,
+    ai_settings_edit_buffer: String,
     next_note_save_nonce: u64,
     pending_note_save_nonce: u64,
     status: SharedString,
@@ -1172,6 +1203,9 @@ struct XnoteWindow {
     settings_accent: SettingsAccent,
     settings_language: Locale,
     settings_language_menu_open: bool,
+    settings_ai_provider_menu_open: bool,
+    settings_ai_endpoint_menu_open: bool,
+    settings_ai_model_menu_open: bool,
     settings_backdrop_armed_until: Option<Instant>,
     editor_view_mode: EditorViewMode,
     editor_split_ratio: f32,
@@ -1328,7 +1362,9 @@ impl XnoteWindow {
             next_ai_endpoint_check_nonce: 0,
             pending_ai_endpoint_check_nonce: 0,
             ai_endpoint_check_result: None,
+            ai_endpoint_check_category: AiEndpointCheckCategory::NotChecked,
             ai_endpoint_check_message: SharedString::from(""),
+            ai_endpoint_check_models: Vec::new(),
             ai_chat_input: String::new(),
             ai_hub_cursor_offset: 0,
             ai_hub_cursor_preferred_col: None,
@@ -1341,6 +1377,8 @@ impl XnoteWindow {
             ai_hub_connection_popup_open: false,
             ai_hub_connection_popup_message: SharedString::from(""),
             ai_hub_connection_popup_backdrop_armed_until: None,
+            ai_settings_editing_field: None,
+            ai_settings_edit_buffer: String::new(),
             next_note_save_nonce: 0,
             pending_note_save_nonce: 0,
             status: SharedString::from(i18n.text("status.ready")),
@@ -1408,6 +1446,9 @@ impl XnoteWindow {
             settings_accent,
             settings_language: boot.locale,
             settings_language_menu_open: false,
+            settings_ai_provider_menu_open: false,
+            settings_ai_endpoint_menu_open: false,
+            settings_ai_model_menu_open: false,
             settings_backdrop_armed_until: None,
             editor_view_mode: EditorViewMode::Edit,
             editor_split_ratio: 0.5,
@@ -1584,9 +1625,7 @@ impl XnoteWindow {
         self.pending_group_preview_loads.clear();
         self.pending_external_note_reload = None;
         self.settings_section = SettingsSection::Appearance;
-        self.settings_open = false;
-        self.settings_language_menu_open = false;
-        self.settings_backdrop_armed_until = None;
+        self.close_settings_overlay();
         self.ai_hub_connection_popup_open = false;
         self.ai_hub_connection_popup_message = SharedString::from("");
         self.ai_hub_connection_popup_backdrop_armed_until = None;
@@ -2839,9 +2878,7 @@ impl XnoteWindow {
         self.vault_prompt_backdrop_armed_until = Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
         self.palette_open = false;
         self.palette_backdrop_armed_until = None;
-        self.settings_open = false;
-        self.settings_language_menu_open = false;
-        self.settings_backdrop_armed_until = None;
+        self.close_settings_overlay();
         self.module_switcher_open = false;
         self.module_switcher_backdrop_armed_until = None;
         cx.notify();
@@ -2948,9 +2985,7 @@ impl XnoteWindow {
     fn open_module_switcher(&mut self, cx: &mut Context<Self>) {
         self.palette_open = false;
         self.palette_backdrop_armed_until = None;
-        self.settings_open = false;
-        self.settings_language_menu_open = false;
-        self.settings_backdrop_armed_until = None;
+        self.close_settings_overlay();
         self.vault_prompt_open = false;
         self.vault_prompt_needs_focus = false;
         self.vault_prompt_error = None;
@@ -4198,7 +4233,9 @@ impl XnoteWindow {
 
         let checking_text = SharedString::from(self.i18n.text("settings.ai.status.endpoint_checking"));
         self.ai_endpoint_check_result = None;
+        self.ai_endpoint_check_category = AiEndpointCheckCategory::Checking;
         self.ai_endpoint_check_message = checking_text.clone();
+        self.ai_endpoint_check_models.clear();
         self.status = checking_text;
         cx.notify();
 
@@ -4208,7 +4245,7 @@ impl XnoteWindow {
                 let endpoint_for_check = endpoint.clone();
                 let api_key_for_check = api_key.clone();
                 async move {
-                    let result = cx
+                    let report = cx
                         .background_executor()
                         .spawn(async move {
                             let key = if api_key_for_check.trim().is_empty() {
@@ -4226,29 +4263,35 @@ impl XnoteWindow {
                         }
 
                         this.pending_ai_endpoint_check_nonce = 0;
+                        let connected = report.category.is_connected();
+                        let status_line = if connected {
+                            format!(
+                                "{} {}",
+                                this.i18n.text("settings.ai.status.endpoint_ok"),
+                                endpoint.trim()
+                            )
+                        } else {
+                            format!(
+                                "{} {}",
+                                this.i18n.text("settings.ai.status.endpoint_failed"),
+                                endpoint.trim()
+                            )
+                        };
 
-                        match result {
-                            Ok(report) => {
-                                let message = format!(
-                                    "{} {}",
-                                    this.i18n.text("settings.ai.status.endpoint_ok"),
-                                    report.summary
-                                );
-                                this.ai_endpoint_check_result = Some(true);
-                                this.ai_endpoint_check_message = SharedString::from(message.clone());
-                                this.status = SharedString::from(message);
-                            }
-                            Err(err) => {
-                                let message = format!(
-                                    "{} {} ({err})",
-                                    this.i18n.text("settings.ai.status.endpoint_failed"),
-                                    endpoint
-                                );
-                                this.ai_endpoint_check_result = Some(false);
-                                this.ai_endpoint_check_message = SharedString::from(message.clone());
-                                this.status = SharedString::from(message);
+                        this.ai_endpoint_check_result = Some(connected);
+                        this.ai_endpoint_check_category = report.category;
+                        this.ai_endpoint_check_message = SharedString::from(report.detail);
+                        let mut next_models = report.models;
+                        if !next_models.is_empty() {
+                            let endpoint_model = this.app_settings.ai.vcp_model.trim();
+                            if !endpoint_model.is_empty() {
+                                next_models.push(endpoint_model.to_string());
+                                next_models.sort();
+                                next_models.dedup();
                             }
                         }
+                        this.ai_endpoint_check_models = next_models;
+                        this.status = SharedString::from(status_line);
 
                         cx.notify();
                     })
@@ -4257,6 +4300,159 @@ impl XnoteWindow {
             },
         )
         .detach();
+    }
+
+    fn clear_ai_settings_surface_state(&mut self) {
+        self.settings_ai_provider_menu_open = false;
+        self.settings_ai_endpoint_menu_open = false;
+        self.settings_ai_model_menu_open = false;
+        self.ai_settings_editing_field = None;
+        self.ai_settings_edit_buffer.clear();
+    }
+
+    fn close_settings_overlay(&mut self) {
+        self.settings_open = false;
+        self.settings_language_menu_open = false;
+        self.clear_ai_settings_surface_state();
+        self.settings_backdrop_armed_until = None;
+    }
+
+    fn open_settings_overlay(&mut self, section: SettingsSection) {
+        self.settings_open = true;
+        self.settings_section = section;
+        self.settings_language_menu_open = false;
+        self.clear_ai_settings_surface_state();
+        self.settings_backdrop_armed_until = Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
+        self.module_switcher_open = false;
+        self.module_switcher_backdrop_armed_until = None;
+    }
+
+    fn reset_ai_endpoint_check_state(&mut self) {
+        self.pending_ai_endpoint_check_nonce = 0;
+        self.ai_endpoint_check_result = None;
+        self.ai_endpoint_check_category = AiEndpointCheckCategory::NotChecked;
+        self.ai_endpoint_check_message = SharedString::from("");
+        self.ai_endpoint_check_models.clear();
+    }
+
+    fn normalize_ai_endpoint_input(raw: &str) -> String {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return DEFAULT_AI_VCP_URL.to_string();
+        }
+
+        let mut normalized = trimmed.to_string();
+        if !(normalized.starts_with("http://") || normalized.starts_with("https://")) {
+            normalized = format!("http://{normalized}");
+        }
+        normalized
+    }
+
+    fn set_ai_provider_value(&mut self, provider: &str) -> String {
+        let normalized = provider.trim();
+        let normalized = if normalized.is_empty() {
+            DEFAULT_AI_PROVIDER.to_string()
+        } else {
+            normalized.to_string()
+        };
+
+        self.app_settings.ai.provider = normalized.clone();
+        self.persist_settings();
+        self.sync_ai_settings_env();
+        self.reset_ai_endpoint_check_state();
+        normalized
+    }
+
+    fn set_ai_endpoint_value(&mut self, endpoint: &str) -> String {
+        let normalized = Self::normalize_ai_endpoint_input(endpoint);
+        self.app_settings.ai.vcp_url = normalized.clone();
+        self.persist_settings();
+        self.sync_ai_settings_env();
+        self.reset_ai_endpoint_check_state();
+        normalized
+    }
+
+    fn set_ai_model_value(&mut self, model: &str) -> String {
+        let trimmed = model.trim();
+        let normalized = if trimmed.is_empty() {
+            DEFAULT_AI_VCP_MODEL.to_string()
+        } else {
+            trimmed.to_string()
+        };
+
+        self.app_settings.ai.vcp_model = normalized.clone();
+        self.persist_settings();
+        self.sync_ai_settings_env();
+        self.reset_ai_endpoint_check_state();
+        normalized
+    }
+
+    fn reset_ai_settings_defaults(&mut self, cx: &mut Context<Self>) {
+        self.app_settings.ai.provider = DEFAULT_AI_PROVIDER.to_string();
+        self.app_settings.ai.vcp_url = DEFAULT_AI_VCP_URL.to_string();
+        self.app_settings.ai.vcp_model = DEFAULT_AI_VCP_MODEL.to_string();
+        self.app_settings.ai.vcp_tool_injection = false;
+        self.persist_settings();
+        self.sync_ai_settings_env();
+        self.reset_ai_endpoint_check_state();
+        self.clear_ai_settings_surface_state();
+        self.status = SharedString::from(self.i18n.text("settings.ai.status.defaults_restored"));
+        cx.notify();
+    }
+
+    fn start_ai_settings_edit(&mut self, field: AiSettingsEditField) {
+        self.clear_ai_settings_surface_state();
+        self.ai_settings_editing_field = Some(field);
+        self.ai_settings_edit_buffer = match field {
+            AiSettingsEditField::Endpoint => {
+                if self.app_settings.ai.vcp_url.trim().is_empty() {
+                    DEFAULT_AI_VCP_URL.to_string()
+                } else {
+                    self.app_settings.ai.vcp_url.trim().to_string()
+                }
+            }
+            AiSettingsEditField::Model => {
+                if self.app_settings.ai.vcp_model.trim().is_empty() {
+                    DEFAULT_AI_VCP_MODEL.to_string()
+                } else {
+                    self.app_settings.ai.vcp_model.trim().to_string()
+                }
+            }
+        };
+    }
+
+    fn cancel_ai_settings_edit(&mut self) {
+        self.ai_settings_editing_field = None;
+        self.ai_settings_edit_buffer.clear();
+    }
+
+    fn commit_ai_settings_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(field) = self.ai_settings_editing_field else {
+            return;
+        };
+        let edit_buffer = self.ai_settings_edit_buffer.clone();
+
+        match field {
+            AiSettingsEditField::Endpoint => {
+                let normalized = self.set_ai_endpoint_value(edit_buffer.as_str());
+                self.status = SharedString::from(format!(
+                    "{} {}",
+                    self.i18n.text("settings.ai.status.endpoint_set"),
+                    normalized
+                ));
+            }
+            AiSettingsEditField::Model => {
+                let normalized = self.set_ai_model_value(edit_buffer.as_str());
+                self.status = SharedString::from(format!(
+                    "{} {}",
+                    self.i18n.text("settings.ai.status.model_set"),
+                    normalized
+                ));
+            }
+        }
+
+        self.cancel_ai_settings_edit();
+        cx.notify();
     }
 
     fn apply_persisted_split_layout(&mut self) {
@@ -4692,12 +4888,7 @@ impl XnoteWindow {
             CommandId::CommandPalette => self.open_palette(PaletteMode::Commands, cx),
             CommandId::Settings => {
                 self.close_palette(cx);
-                self.settings_open = true;
-                self.settings_language_menu_open = false;
-                self.settings_backdrop_armed_until =
-                    Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
-                self.module_switcher_open = false;
-                self.module_switcher_backdrop_armed_until = None;
+                self.open_settings_overlay(self.settings_section);
                 cx.notify();
             }
             CommandId::ReloadVault => {
@@ -5026,14 +5217,16 @@ impl XnoteWindow {
     }
 
     fn ai_hub_chat_enabled(&self) -> bool {
-        self.ai_endpoint_check_result == Some(true)
+        self.ai_endpoint_check_category.is_connected()
     }
 
     fn ai_hub_connection_block_reason(&self) -> String {
-        match self.ai_endpoint_check_result {
-            Some(true) => String::new(),
-            Some(false) => self.i18n.text("ai.hub.error.vcp_not_connected"),
-            None => self.i18n.text("ai.hub.error.vcp_not_checked"),
+        match self.ai_endpoint_check_category {
+            AiEndpointCheckCategory::Connected => String::new(),
+            AiEndpointCheckCategory::NotChecked | AiEndpointCheckCategory::Checking => {
+                self.i18n.text("ai.hub.error.vcp_not_checked")
+            }
+            _ => self.i18n.text("ai.hub.error.vcp_not_connected"),
         }
     }
 
@@ -5137,13 +5330,7 @@ impl XnoteWindow {
                                 MouseButton::Left,
                                 cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
                                     this.close_ai_hub_connection_popup(cx);
-                                    this.settings_open = true;
-                                    this.settings_section = SettingsSection::Ai;
-                                    this.settings_language_menu_open = false;
-                                    this.settings_backdrop_armed_until =
-                                        Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
-                                    this.module_switcher_open = false;
-                                    this.module_switcher_backdrop_armed_until = None;
+                                    this.open_settings_overlay(SettingsSection::Ai);
                                     cx.notify();
                                 }),
                             )
@@ -7692,6 +7879,7 @@ impl XnoteWindow {
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         this.settings_section = section;
                         this.settings_language_menu_open = false;
+                        this.clear_ai_settings_surface_state();
                         cx.notify();
                     }))
                     .child(ui_icon(
@@ -7900,6 +8088,7 @@ impl XnoteWindow {
                 .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                     this.settings_language_menu_open = !this.settings_language_menu_open;
+                    this.clear_ai_settings_surface_state();
                     cx.notify();
                 }))
                 .child(
@@ -7935,6 +8124,7 @@ impl XnoteWindow {
                             this.status = SharedString::from(this.i18n.text("status.ready"));
                             this.persist_settings();
                             this.settings_language_menu_open = false;
+                            this.clear_ai_settings_surface_state();
                             cx.notify();
                         }))
                         .child(
@@ -7961,6 +8151,7 @@ impl XnoteWindow {
                             this.status = SharedString::from(this.i18n.text("status.ready"));
                             this.persist_settings();
                             this.settings_language_menu_open = false;
+                            this.clear_ai_settings_surface_state();
                             cx.notify();
                         }))
                         .child(
@@ -8208,37 +8399,60 @@ impl XnoteWindow {
                 self.app_settings.ai.vcp_model.trim().to_string()
             };
 
-            let provider_toggle = div()
+            let endpoint_candidates = vec![
+                "http://127.0.0.1:6005".to_string(),
+                "http://localhost:6005".to_string(),
+                "http://127.0.0.1:5890".to_string(),
+                "http://localhost:5890".to_string(),
+            ];
+
+            let is_editing = self.ai_settings_editing_field.is_some();
+            let is_checking_endpoint =
+                self.ai_endpoint_check_category == AiEndpointCheckCategory::Checking;
+            let can_interact_controls = !is_editing && !is_checking_endpoint;
+            let endpoint_is_custom = !endpoint_candidates
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(endpoint_label.as_str()));
+
+            let mut model_candidates = vec![
+                DEFAULT_AI_VCP_MODEL.to_string(),
+                "gemini-2.5-pro-preview".to_string(),
+                "gpt-4.1".to_string(),
+                "gpt-4o-mini".to_string(),
+                "deepseek-chat".to_string(),
+                "qwen-plus".to_string(),
+            ];
+            model_candidates.extend(self.ai_endpoint_check_models.iter().cloned());
+            model_candidates.sort();
+            model_candidates.dedup();
+
+            let provider_select = div()
                 .id("settings.ai.provider")
                 .h(px(34.))
                 .px(px(10.))
                 .bg(rgb(ui_theme.surface_alt_bg))
                 .border_1()
                 .border_color(rgb(ui_theme.border))
-                .cursor_pointer()
-                .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                .cursor(if can_interact_controls {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::OperationNotAllowed
+                })
+                .when(can_interact_controls, |this| {
+                    this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                })
                 .flex()
                 .items_center()
                 .justify_between()
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                    let next = if this
-                        .app_settings
-                        .ai
-                        .provider
-                        .trim()
-                        .eq_ignore_ascii_case("vcp")
+                    if this.ai_settings_editing_field.is_some()
+                        || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
                     {
-                        "mock"
-                    } else {
-                        "vcp"
-                    };
-                    this.app_settings.ai.provider = next.to_string();
-                    this.persist_settings();
-                    this.sync_ai_settings_env();
-                    this.status = SharedString::from(format!(
-                        "{} {next}",
-                        this.i18n.text("settings.ai.status.provider_set")
-                    ));
+                        return;
+                    }
+                    this.settings_ai_provider_menu_open = !this.settings_ai_provider_menu_open;
+                    this.settings_ai_endpoint_menu_open = false;
+                    this.settings_ai_model_menu_open = false;
                     cx.notify();
                 }))
                 .child(
@@ -8251,32 +8465,98 @@ impl XnoteWindow {
                 )
                 .child(ui_icon(ICON_CHEVRON_DOWN, 16., ui_theme.text_muted));
 
-            let endpoint_toggle = div()
+            let provider_menu = div()
+                .id("settings.ai.provider.menu")
+                .w_full()
+                .bg(rgb(ui_theme.surface_bg))
+                .border_1()
+                .border_color(rgb(ui_theme.border))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id("settings.ai.provider.option.vcp")
+                        .h(px(34.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                            let next = "vcp";
+                            this.set_ai_provider_value(next);
+                            this.settings_ai_provider_menu_open = false;
+                            this.status = SharedString::from(format!(
+                                "{} {next}",
+                                this.i18n.text("settings.ai.status.provider_set")
+                            ));
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family("Inter")
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(rgb(ui_theme.text_primary))
+                                .child("vcp"),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("settings.ai.provider.option.mock")
+                        .h(px(34.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                            let next = "mock";
+                            this.set_ai_provider_value(next);
+                            this.settings_ai_provider_menu_open = false;
+                            this.status = SharedString::from(format!(
+                                "{} {next}",
+                                this.i18n.text("settings.ai.status.provider_set")
+                            ));
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family("Inter")
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(rgb(ui_theme.text_primary))
+                                .child("mock"),
+                        ),
+                );
+
+            let endpoint_select = div()
                 .id("settings.ai.endpoint")
                 .h(px(34.))
                 .px(px(10.))
                 .bg(rgb(ui_theme.surface_alt_bg))
                 .border_1()
                 .border_color(rgb(ui_theme.border))
-                .cursor_pointer()
-                .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                .cursor(if can_interact_controls {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::OperationNotAllowed
+                })
+                .when(can_interact_controls, |this| {
+                    this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                })
                 .flex()
                 .items_center()
                 .justify_between()
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                    let current = this.app_settings.ai.vcp_url.trim().to_string();
-                    let next = if current.eq_ignore_ascii_case(DEFAULT_AI_VCP_URL) {
-                        "http://localhost:5890".to_string()
-                    } else {
-                        DEFAULT_AI_VCP_URL.to_string()
-                    };
-                    this.app_settings.ai.vcp_url = next.clone();
-                    this.persist_settings();
-                    this.sync_ai_settings_env();
-                    this.status = SharedString::from(format!(
-                        "{} {next}",
-                        this.i18n.text("settings.ai.status.endpoint_set")
-                    ));
+                    if this.ai_settings_editing_field.is_some()
+                        || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
+                    {
+                        return;
+                    }
+                    this.settings_ai_endpoint_menu_open = !this.settings_ai_endpoint_menu_open;
+                    this.settings_ai_provider_menu_open = false;
+                    this.settings_ai_model_menu_open = false;
                     cx.notify();
                 }))
                 .child(
@@ -8287,34 +8567,75 @@ impl XnoteWindow {
                         .text_color(rgb(ui_theme.text_primary))
                         .child(endpoint_label),
                 )
-                .child(ui_icon(ICON_REFRESH_CW, 14., ui_theme.text_muted));
+                .child(ui_icon(ICON_CHEVRON_DOWN, 16., ui_theme.text_muted));
 
-            let model_toggle = div()
+            let mut endpoint_menu = div()
+                .id("settings.ai.endpoint.menu")
+                .w_full()
+                .bg(rgb(ui_theme.surface_bg))
+                .border_1()
+                .border_color(rgb(ui_theme.border))
+                .flex()
+                .flex_col();
+            for (idx, endpoint) in endpoint_candidates.iter().enumerate() {
+                let option = endpoint.clone();
+                endpoint_menu = endpoint_menu.child(
+                    div()
+                        .id(ElementId::named_usize("settings.ai.endpoint.option", idx))
+                        .h(px(34.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                            let next_endpoint = this.set_ai_endpoint_value(option.as_str());
+                            this.settings_ai_endpoint_menu_open = false;
+                            this.status = SharedString::from(format!(
+                                "{} {}",
+                                this.i18n.text("settings.ai.status.endpoint_set"),
+                                next_endpoint
+                            ));
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(rgb(ui_theme.text_primary))
+                                .child(endpoint.clone()),
+                        ),
+                );
+            }
+
+            let model_select = div()
                 .id("settings.ai.model")
                 .h(px(34.))
                 .px(px(10.))
                 .bg(rgb(ui_theme.surface_alt_bg))
                 .border_1()
                 .border_color(rgb(ui_theme.border))
-                .cursor_pointer()
-                .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                .cursor(if can_interact_controls {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::OperationNotAllowed
+                })
+                .when(can_interact_controls, |this| {
+                    this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                })
                 .flex()
                 .items_center()
                 .justify_between()
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                    let current = this.app_settings.ai.vcp_model.trim().to_string();
-                    let next = if current.eq_ignore_ascii_case(DEFAULT_AI_VCP_MODEL) {
-                        "gemini-2.5-pro-preview".to_string()
-                    } else {
-                        DEFAULT_AI_VCP_MODEL.to_string()
-                    };
-                    this.app_settings.ai.vcp_model = next.clone();
-                    this.persist_settings();
-                    this.sync_ai_settings_env();
-                    this.status = SharedString::from(format!(
-                        "{} {next}",
-                        this.i18n.text("settings.ai.status.model_set")
-                    ));
+                    if this.ai_settings_editing_field.is_some()
+                        || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
+                    {
+                        return;
+                    }
+                    this.settings_ai_model_menu_open = !this.settings_ai_model_menu_open;
+                    this.settings_ai_provider_menu_open = false;
+                    this.settings_ai_endpoint_menu_open = false;
                     cx.notify();
                 }))
                 .child(
@@ -8327,6 +8648,46 @@ impl XnoteWindow {
                 )
                 .child(ui_icon(ICON_CHEVRON_DOWN, 16., ui_theme.text_muted));
 
+            let mut model_menu = div()
+                .id("settings.ai.model.menu")
+                .w_full()
+                .bg(rgb(ui_theme.surface_bg))
+                .border_1()
+                .border_color(rgb(ui_theme.border))
+                .flex()
+                .flex_col();
+            for (idx, model) in model_candidates.iter().enumerate() {
+                let option = model.clone();
+                model_menu = model_menu.child(
+                    div()
+                        .id(ElementId::named_usize("settings.ai.model.option", idx))
+                        .h(px(34.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                            let next_model = this.set_ai_model_value(option.as_str());
+                            this.settings_ai_model_menu_open = false;
+                            this.status = SharedString::from(format!(
+                                "{} {}",
+                                this.i18n.text("settings.ai.status.model_set"),
+                                next_model
+                            ));
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(rgb(ui_theme.text_primary))
+                                .child(model.clone()),
+                        ),
+                );
+            }
+
             let tool_injection_toggle = div()
                 .id("settings.ai.tool_injection")
                 .h(px(34.))
@@ -8338,16 +8699,28 @@ impl XnoteWindow {
                 })
                 .border_1()
                 .border_color(rgb(ui_theme.border))
-                .cursor_pointer()
-                .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                .cursor(if can_interact_controls {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::OperationNotAllowed
+                })
+                .when(can_interact_controls, |this| {
+                    this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                })
                 .flex()
                 .items_center()
                 .justify_between()
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                    if this.ai_settings_editing_field.is_some()
+                        || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
+                    {
+                        return;
+                    }
                     this.app_settings.ai.vcp_tool_injection =
                         !this.app_settings.ai.vcp_tool_injection;
                     this.persist_settings();
                     this.sync_ai_settings_env();
+                    this.reset_ai_endpoint_check_state();
                     this.status = SharedString::from(if this.app_settings.ai.vcp_tool_injection {
                         this.i18n.text("settings.ai.status.tool_injection_enabled")
                     } else {
@@ -8376,12 +8749,23 @@ impl XnoteWindow {
                 .bg(rgb(ui_theme.surface_alt_bg))
                 .border_1()
                 .border_color(rgb(ui_theme.border))
-                .cursor_pointer()
-                .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                .cursor(if can_interact_controls {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::OperationNotAllowed
+                })
+                .when(can_interact_controls, |this| {
+                    this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                })
                 .flex()
                 .items_center()
                 .justify_center()
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                    if this.ai_settings_editing_field.is_some()
+                        || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
+                    {
+                        return;
+                    }
                     this.sync_ai_settings_env();
                     let endpoint = if this.app_settings.ai.vcp_url.trim().is_empty() {
                         DEFAULT_AI_VCP_URL
@@ -8405,6 +8789,455 @@ impl XnoteWindow {
                         .child(self.i18n.text("settings.ai.button.apply_check")),
                 );
 
+            let endpoint_quick_row = div()
+                .w_full()
+                .flex()
+                .flex_row()
+                .gap_2()
+                .child(
+                    div()
+                        .id("settings.ai.endpoint.quick.6005")
+                        .h(px(30.))
+                        .flex_1()
+                        .px(px(10.))
+                        .bg(rgb(ui_theme.surface_alt_bg))
+                        .border_1()
+                        .border_color(rgb(ui_theme.border))
+                        .cursor(if can_interact_controls {
+                            CursorStyle::PointingHand
+                        } else {
+                            CursorStyle::OperationNotAllowed
+                        })
+                        .when(can_interact_controls, |this| {
+                            this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                            if this.ai_settings_editing_field.is_some()
+                                || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
+                            {
+                                return;
+                            }
+                            let endpoint = this.set_ai_endpoint_value("http://127.0.0.1:6005");
+                            this.status = SharedString::from(format!(
+                                "{} {}",
+                                this.i18n.text("settings.ai.status.endpoint_set"),
+                                endpoint
+                            ));
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family("Inter")
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(760.))
+                                .text_color(rgb(ui_theme.text_primary))
+                                .child(self.i18n.text("settings.ai.endpoint.quick.6005")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("settings.ai.endpoint.quick.5890")
+                        .h(px(30.))
+                        .flex_1()
+                        .px(px(10.))
+                        .bg(rgb(ui_theme.surface_alt_bg))
+                        .border_1()
+                        .border_color(rgb(ui_theme.border))
+                        .cursor(if can_interact_controls {
+                            CursorStyle::PointingHand
+                        } else {
+                            CursorStyle::OperationNotAllowed
+                        })
+                        .when(can_interact_controls, |this| {
+                            this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                            if this.ai_settings_editing_field.is_some()
+                                || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
+                            {
+                                return;
+                            }
+                            let endpoint = this.set_ai_endpoint_value("http://127.0.0.1:5890");
+                            this.status = SharedString::from(format!(
+                                "{} {}",
+                                this.i18n.text("settings.ai.status.endpoint_set"),
+                                endpoint
+                            ));
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family("Inter")
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(760.))
+                                .text_color(rgb(ui_theme.text_primary))
+                                .child(self.i18n.text("settings.ai.endpoint.quick.5890")),
+                        ),
+                );
+
+            let endpoint_custom_btn = div()
+                .id("settings.ai.endpoint.custom")
+                .h(px(30.))
+                .px(px(10.))
+                .bg(rgb(ui_theme.surface_alt_bg))
+                .border_1()
+                .border_color(rgb(if endpoint_is_custom {
+                    ui_theme.accent_soft
+                } else {
+                    ui_theme.border
+                }))
+                .cursor(if can_interact_controls {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::OperationNotAllowed
+                })
+                .when(can_interact_controls, |this| {
+                    this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                })
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                    if this.ai_settings_editing_field.is_some()
+                        || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
+                    {
+                        return;
+                    }
+                    this.start_ai_settings_edit(AiSettingsEditField::Endpoint);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .font_family("Inter")
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(760.))
+                        .text_color(rgb(ui_theme.text_primary))
+                        .child(self.i18n.text("settings.ai.button.custom_endpoint")),
+                );
+
+            let model_custom_btn = div()
+                .id("settings.ai.model.custom")
+                .h(px(30.))
+                .px(px(10.))
+                .bg(rgb(ui_theme.surface_alt_bg))
+                .border_1()
+                .border_color(rgb(ui_theme.border))
+                .cursor(if can_interact_controls {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::OperationNotAllowed
+                })
+                .when(can_interact_controls, |this| {
+                    this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                })
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                    if this.ai_settings_editing_field.is_some()
+                        || this.ai_endpoint_check_category == AiEndpointCheckCategory::Checking
+                    {
+                        return;
+                    }
+                    this.start_ai_settings_edit(AiSettingsEditField::Model);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .font_family("Inter")
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(760.))
+                        .text_color(rgb(ui_theme.text_primary))
+                        .child(self.i18n.text("settings.ai.button.custom_model")),
+                );
+
+            let edit_buffer_color = if self.ai_settings_edit_buffer.trim().is_empty() {
+                ui_theme.text_subtle
+            } else {
+                ui_theme.text_primary
+            };
+
+            let endpoint_edit_row = if matches!(
+                self.ai_settings_editing_field,
+                Some(AiSettingsEditField::Endpoint)
+            ) {
+                self.ai_settings_editing_field.map(|_| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(760.))
+                                .text_color(rgb(ui_theme.text_muted))
+                                .child(format!(
+                                    "{} {}",
+                                    self.i18n.text("settings.ai.edit.target.label"),
+                                    self.i18n.text("settings.ai.edit.target.endpoint")
+                                )),
+                        )
+                        .child(
+                            div()
+                                .id("settings.ai.edit.input.endpoint")
+                                .h(px(34.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.accent_soft))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(edit_buffer_color))
+                                        .child(if self.ai_settings_edit_buffer.trim().is_empty() {
+                                            self.i18n.text("settings.ai.edit.placeholder")
+                                        } else {
+                                            self.ai_settings_edit_buffer.clone()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.paste.endpoint")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            if let Some(text) =
+                                                cx.read_from_clipboard().and_then(|item| item.text())
+                                            {
+                                                this.ai_settings_edit_buffer.push_str(text.as_str());
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.paste")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.cancel.endpoint")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.cancel_ai_settings_edit();
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.cancel_edit")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.save.endpoint")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.accent_soft))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.accent))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.commit_ai_settings_edit(cx);
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(800.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.save_edit")),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
+                })
+            } else {
+                None
+            };
+
+            let model_edit_row = if matches!(self.ai_settings_editing_field, Some(AiSettingsEditField::Model)) {
+                self.ai_settings_editing_field.map(|_| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(760.))
+                                .text_color(rgb(ui_theme.text_muted))
+                                .child(format!(
+                                    "{} {}",
+                                    self.i18n.text("settings.ai.edit.target.label"),
+                                    self.i18n.text("settings.ai.edit.target.model")
+                                )),
+                        )
+                        .child(
+                            div()
+                                .id("settings.ai.edit.input.model")
+                                .h(px(34.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.accent_soft))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(edit_buffer_color))
+                                        .child(if self.ai_settings_edit_buffer.trim().is_empty() {
+                                            self.i18n.text("settings.ai.edit.placeholder")
+                                        } else {
+                                            self.ai_settings_edit_buffer.clone()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.paste.model")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            if let Some(text) =
+                                                cx.read_from_clipboard().and_then(|item| item.text())
+                                            {
+                                                this.ai_settings_edit_buffer.push_str(text.as_str());
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.paste")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.cancel.model")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.cancel_ai_settings_edit();
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.cancel_edit")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.save.model")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.accent_soft))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.accent))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.commit_ai_settings_edit(cx);
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(800.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.save_edit")),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
+                })
+            } else {
+                None
+            };
+
             let connection_message = {
                 let raw = self.ai_endpoint_check_message.to_string();
                 if raw.trim().is_empty() {
@@ -8414,11 +9247,96 @@ impl XnoteWindow {
                 }
             };
 
-            let connection_message_color = match self.ai_endpoint_check_result {
-                Some(true) => ui_theme.text_secondary,
-                Some(false) => ui_theme.diagnostic_error,
-                None => ui_theme.text_muted,
+            let connection_status_label = match self.ai_endpoint_check_category {
+                AiEndpointCheckCategory::NotChecked => {
+                    self.i18n.text("settings.ai.connection.state.not_checked")
+                }
+                AiEndpointCheckCategory::Checking => {
+                    self.i18n.text("settings.ai.connection.state.checking")
+                }
+                AiEndpointCheckCategory::Connected => {
+                    self.i18n.text("settings.ai.connection.state.connected")
+                }
+                AiEndpointCheckCategory::Timeout => {
+                    self.i18n.text("settings.ai.connection.state.timeout")
+                }
+                AiEndpointCheckCategory::Unauthorized => {
+                    self.i18n.text("settings.ai.connection.state.unauthorized")
+                }
+                AiEndpointCheckCategory::ApiPathNotFound => {
+                    self.i18n.text("settings.ai.connection.state.api_not_found")
+                }
+                AiEndpointCheckCategory::InvalidEndpoint => {
+                    self.i18n.text("settings.ai.connection.state.invalid_endpoint")
+                }
+                AiEndpointCheckCategory::NetworkError => {
+                    self.i18n.text("settings.ai.connection.state.network_error")
+                }
+                AiEndpointCheckCategory::ServerError => {
+                    self.i18n.text("settings.ai.connection.state.server_error")
+                }
+                AiEndpointCheckCategory::ClientError => {
+                    self.i18n.text("settings.ai.connection.state.client_error")
+                }
+                AiEndpointCheckCategory::UnknownError => {
+                    self.i18n.text("settings.ai.connection.state.unknown_error")
+                }
             };
+
+            let connection_status_hint = match self.ai_endpoint_check_category {
+                AiEndpointCheckCategory::NotChecked => {
+                    self.i18n.text("settings.ai.connection.hint.not_checked")
+                }
+                AiEndpointCheckCategory::Checking => {
+                    self.i18n.text("settings.ai.connection.hint.checking")
+                }
+                AiEndpointCheckCategory::Connected => {
+                    self.i18n.text("settings.ai.connection.hint.connected")
+                }
+                AiEndpointCheckCategory::Timeout => {
+                    self.i18n.text("settings.ai.connection.hint.timeout")
+                }
+                AiEndpointCheckCategory::Unauthorized => {
+                    self.i18n.text("settings.ai.connection.hint.unauthorized")
+                }
+                AiEndpointCheckCategory::ApiPathNotFound => {
+                    self.i18n.text("settings.ai.connection.hint.api_not_found")
+                }
+                AiEndpointCheckCategory::InvalidEndpoint => {
+                    self.i18n.text("settings.ai.connection.hint.invalid_endpoint")
+                }
+                AiEndpointCheckCategory::NetworkError => {
+                    self.i18n.text("settings.ai.connection.hint.network_error")
+                }
+                AiEndpointCheckCategory::ServerError => {
+                    self.i18n.text("settings.ai.connection.hint.server_error")
+                }
+                AiEndpointCheckCategory::ClientError => {
+                    self.i18n.text("settings.ai.connection.hint.client_error")
+                }
+                AiEndpointCheckCategory::UnknownError => {
+                    self.i18n.text("settings.ai.connection.hint.unknown_error")
+                }
+            };
+
+            let (connection_message_color, connection_badge_bg, connection_badge_border) =
+                match self.ai_endpoint_check_category {
+                    AiEndpointCheckCategory::Connected => (
+                        ui_theme.text_secondary,
+                        ui_theme.surface_alt_bg,
+                        ui_theme.border,
+                    ),
+                    AiEndpointCheckCategory::NotChecked | AiEndpointCheckCategory::Checking => (
+                        ui_theme.text_muted,
+                        ui_theme.surface_alt_bg,
+                        ui_theme.border,
+                    ),
+                    _ => (
+                        ui_theme.diagnostic_error,
+                        ui_theme.surface_alt_bg,
+                        ui_theme.diagnostic_error,
+                    ),
+                };
 
             let connection_card_body = div()
                 .w_full()
@@ -8426,6 +9344,46 @@ impl XnoteWindow {
                 .flex_col()
                 .gap_2()
                 .child(apply_btn)
+                .children((!self.ai_endpoint_check_models.is_empty()).then_some(
+                    div()
+                        .font_family("Inter")
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(650.))
+                        .line_height(relative(1.3))
+                        .text_color(rgb(ui_theme.text_secondary))
+                        .child(format!(
+                            "{} {}",
+                            self.i18n.text("settings.ai.connection.models_detected"),
+                            self.ai_endpoint_check_models.join(", ")
+                        )),
+                ))
+                .child(
+                    div()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .bg(rgb(connection_badge_bg))
+                        .border_1()
+                        .border_color(rgb(connection_badge_border))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(760.))
+                                .text_color(rgb(connection_message_color))
+                                .child(self.i18n.text("settings.ai.connection.state_label")),
+                        )
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(800.))
+                                .text_color(rgb(connection_message_color))
+                                .child(connection_status_label),
+                        ),
+                )
                 .child(
                     div()
                         .font_family("Inter")
@@ -8434,6 +9392,15 @@ impl XnoteWindow {
                         .line_height(relative(1.3))
                         .text_color(rgb(connection_message_color))
                         .child(connection_message),
+                )
+                .child(
+                    div()
+                        .font_family("Inter")
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(600.))
+                        .line_height(relative(1.3))
+                        .text_color(rgb(ui_theme.text_muted))
+                        .child(connection_status_hint),
                 );
 
             div()
@@ -8444,17 +9411,152 @@ impl XnoteWindow {
                 .child(card(
                     self.i18n.text("settings.ai.card.provider.title"),
                     self.i18n.text("settings.ai.card.provider.desc"),
-                    provider_toggle.into_any_element(),
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(provider_select)
+                        .children(
+                            self.settings_ai_provider_menu_open
+                                .then_some(provider_menu),
+                        )
+                        .into_any_element(),
                 ))
                 .child(card(
                     self.i18n.text("settings.ai.card.endpoint.title"),
                     self.i18n.text("settings.ai.card.endpoint.desc"),
-                    endpoint_toggle.into_any_element(),
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(endpoint_select)
+                        .children(
+                            self.settings_ai_endpoint_menu_open
+                                .then_some(endpoint_menu),
+                        )
+                        .child(endpoint_quick_row)
+                        .child(endpoint_custom_btn)
+                        .when(
+                            matches!(
+                                self.ai_settings_editing_field,
+                                Some(AiSettingsEditField::Endpoint)
+                            ),
+                            |this| this.children(endpoint_edit_row),
+                        )
+                        .into_any_element(),
                 ))
                 .child(card(
                     self.i18n.text("settings.ai.card.model.title"),
                     self.i18n.text("settings.ai.card.model.desc"),
-                    model_toggle.into_any_element(),
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(model_select)
+                        .children(
+                            self.settings_ai_model_menu_open
+                                .then_some(model_menu),
+                        )
+                        .child(model_custom_btn)
+                        .when(
+                            matches!(
+                                self.ai_settings_editing_field,
+                                Some(AiSettingsEditField::Model)
+                            ),
+                            |this| this.children(model_edit_row),
+                        )
+                        .into_any_element(),
+                ))
+                .child(card(
+                    self.i18n.text("settings.ai.card.actions.title"),
+                    self.i18n.text("settings.ai.card.actions.desc"),
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("settings.ai.action.reset")
+                                .h(px(34.))
+                                .flex_1()
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_alt_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.border))
+                                .cursor(if can_interact_controls {
+                                    CursorStyle::PointingHand
+                                } else {
+                                    CursorStyle::OperationNotAllowed
+                                })
+                                .when(can_interact_controls, |this| {
+                                    this.hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                    if this.ai_settings_editing_field.is_some()
+                                        || this.ai_endpoint_check_category
+                                            == AiEndpointCheckCategory::Checking
+                                    {
+                                        return;
+                                    }
+                                    this.reset_ai_settings_defaults(cx);
+                                }))
+                                .child(
+                                    div()
+                                        .font_family("Inter")
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(760.))
+                                        .text_color(rgb(ui_theme.text_primary))
+                                        .child(self.i18n.text("settings.ai.button.reset_defaults")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("settings.ai.action.check_now")
+                                .h(px(34.))
+                                .flex_1()
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.accent_soft))
+                                .border_1()
+                                .border_color(rgb(ui_theme.accent))
+                                .cursor(if can_interact_controls {
+                                    CursorStyle::PointingHand
+                                } else {
+                                    CursorStyle::OperationNotAllowed
+                                })
+                                .when(can_interact_controls, |this| {
+                                    this.hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                    if this.ai_settings_editing_field.is_some()
+                                        || this.ai_endpoint_check_category
+                                            == AiEndpointCheckCategory::Checking
+                                    {
+                                        return;
+                                    }
+                                    this.sync_ai_settings_env();
+                                    this.run_ai_endpoint_check(cx);
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .font_family("Inter")
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(800.))
+                                        .text_color(rgb(ui_theme.text_primary))
+                                        .child(self.i18n.text("settings.ai.button.check_now")),
+                                ),
+                        )
+                        .into_any_element(),
                 ))
                 .child(card(
                     self.i18n.text("settings.ai.card.tool_loop.title"),
@@ -8954,9 +10056,7 @@ impl XnoteWindow {
                             .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
                             .occlude()
                             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.settings_open = false;
-                                this.settings_language_menu_open = false;
-                                this.settings_backdrop_armed_until = None;
+                                this.close_settings_overlay();
                                 cx.notify();
                             }))
                             .child(ui_icon(ICON_X, 16., ui_theme.text_muted)),
@@ -9067,9 +10167,7 @@ impl XnoteWindow {
                     return;
                 }
                 if ev.keystroke.key.eq_ignore_ascii_case("escape") {
-                    this.settings_open = false;
-                    this.settings_language_menu_open = false;
-                    this.settings_backdrop_armed_until = None;
+                    this.close_settings_overlay();
                     cx.notify();
                 }
             }))
@@ -9088,9 +10186,7 @@ impl XnoteWindow {
                             .settings_backdrop_armed_until
                             .is_none_or(|deadline| Instant::now() >= deadline);
                         if armed {
-                            this.settings_open = false;
-                            this.settings_language_menu_open = false;
-                            this.settings_backdrop_armed_until = None;
+                            this.close_settings_overlay();
                             cx.notify();
                         }
                     })),
@@ -10115,9 +11211,7 @@ impl XnoteWindow {
                 return;
             }
             if ev.keystroke.key.eq_ignore_ascii_case("escape") {
-                self.settings_open = false;
-                self.settings_language_menu_open = false;
-                self.settings_backdrop_armed_until = None;
+                self.close_settings_overlay();
                 cx.notify();
             }
             return;
@@ -10252,6 +11346,21 @@ impl XnoteWindow {
                 cx.notify();
                 return true;
             }
+            if self.ai_settings_editing_field.is_some() {
+                self.cancel_ai_settings_edit();
+                cx.notify();
+                return true;
+            }
+            if self.settings_language_menu_open
+                || self.settings_ai_provider_menu_open
+                || self.settings_ai_endpoint_menu_open
+                || self.settings_ai_model_menu_open
+            {
+                self.settings_language_menu_open = false;
+                self.clear_ai_settings_surface_state();
+                cx.notify();
+                return true;
+            }
             return false;
         }
 
@@ -10318,6 +11427,41 @@ impl XnoteWindow {
             return true;
         }
 
+        if self.ai_settings_editing_field.is_some() {
+            match key.as_str() {
+                "enter" | "return" => {
+                    self.commit_ai_settings_edit(cx);
+                    return true;
+                }
+                "backspace" => {
+                    if self.ai_settings_edit_buffer.pop().is_some() {
+                        cx.notify();
+                    }
+                    return true;
+                }
+                _ => {
+                    if ctrl {
+                        if key.as_str() == "v" {
+                            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                                self.ai_settings_edit_buffer.push_str(text.as_str());
+                                cx.notify();
+                            }
+                        }
+                        return true;
+                    }
+
+                    let Some(text) = ev.keystroke.key_char.as_ref() else {
+                        return true;
+                    };
+                    if !text.is_empty() {
+                        self.ai_settings_edit_buffer.push_str(text.as_str());
+                        cx.notify();
+                    }
+                    return true;
+                }
+            }
+        }
+
         false
     }
 
@@ -10328,9 +11472,7 @@ impl XnoteWindow {
         }
         if self.settings_open {
             if ev.keystroke.key.eq_ignore_ascii_case("escape") {
-                self.settings_open = false;
-                self.settings_language_menu_open = false;
-                self.settings_backdrop_armed_until = None;
+                self.close_settings_overlay();
                 cx.notify();
             }
             return;
@@ -12093,9 +13235,7 @@ impl XnoteWindow {
         }
         if self.settings_open {
             if key == "escape" {
-                self.settings_open = false;
-                self.settings_language_menu_open = false;
-                self.settings_backdrop_armed_until = None;
+                self.close_settings_overlay();
                 cx.notify();
             }
             return;
@@ -13468,12 +14608,7 @@ impl Render for XnoteWindow {
                 0x6b7280,
                 false,
                 |this, cx| {
-                    this.settings_open = true;
-                    this.settings_language_menu_open = false;
-                    this.settings_backdrop_armed_until =
-                        Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
-                    this.module_switcher_open = false;
-                    this.module_switcher_backdrop_armed_until = None;
+                    this.open_settings_overlay(this.settings_section);
                     cx.notify();
                 },
             ));
@@ -13500,12 +14635,7 @@ impl Render for XnoteWindow {
                 0x6b7280,
                 false,
                 |this, cx| {
-                    this.settings_open = true;
-                    this.settings_language_menu_open = false;
-                    this.settings_backdrop_armed_until =
-                        Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
-                    this.module_switcher_open = false;
-                    this.module_switcher_backdrop_armed_until = None;
+                    this.open_settings_overlay(SettingsSection::Ai);
                     cx.notify();
                 },
             ));
@@ -17624,24 +18754,66 @@ fn build_clock_label(_epoch_secs: u64) -> String {
 
 #[derive(Debug)]
 struct VcpEndpointProbeReport {
-    summary: String,
+    category: AiEndpointCheckCategory,
+    detail: String,
+    models: Vec<String>,
 }
 
-fn probe_vcp_endpoint(
-    endpoint: &str,
-    api_key: Option<&str>,
-) -> std::io::Result<VcpEndpointProbeReport> {
-    let host_port = parse_host_port_from_endpoint(endpoint)?;
-    let mut addrs = host_port.to_socket_addrs()?;
-    let Some(addr) = addrs.next() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AddrNotAvailable,
-            "endpoint resolved no address",
-        ));
+fn probe_vcp_endpoint(endpoint: &str, api_key: Option<&str>) -> VcpEndpointProbeReport {
+    let endpoint_trimmed = endpoint.trim().to_string();
+    let host_port = match parse_host_port_from_endpoint(endpoint_trimmed.as_str()) {
+        Ok(host_port) => host_port,
+        Err(err) => {
+            return VcpEndpointProbeReport {
+                category: AiEndpointCheckCategory::InvalidEndpoint,
+                detail: format!("{} ({err})", endpoint_trimmed),
+                models: Vec::new(),
+            }
+        }
     };
-    TcpStream::connect_timeout(&addr, AI_ENDPOINT_CHECK_TIMEOUT)?;
 
-    let models_endpoint = build_vcp_models_endpoint(endpoint)?;
+    let mut addrs = match host_port.to_socket_addrs() {
+        Ok(addrs) => addrs,
+        Err(err) => {
+            return VcpEndpointProbeReport {
+                category: AiEndpointCheckCategory::InvalidEndpoint,
+                detail: format!("{} ({err})", endpoint_trimmed),
+                models: Vec::new(),
+            }
+        }
+    };
+    let Some(addr) = addrs.next() else {
+        return VcpEndpointProbeReport {
+            category: AiEndpointCheckCategory::InvalidEndpoint,
+            detail: format!("{} (endpoint resolved no address)", endpoint_trimmed),
+            models: Vec::new(),
+        };
+    };
+
+    if let Err(err) = TcpStream::connect_timeout(&addr, AI_ENDPOINT_CHECK_TIMEOUT) {
+        let category = if err.kind() == ErrorKind::TimedOut {
+            AiEndpointCheckCategory::Timeout
+        } else {
+            AiEndpointCheckCategory::NetworkError
+        };
+        return VcpEndpointProbeReport {
+            category,
+            detail: format!("{} ({err})", endpoint_trimmed),
+            models: Vec::new(),
+        };
+    }
+
+    let models_endpoint = match build_vcp_models_endpoint(endpoint_trimmed.as_str()) {
+        Ok(url) => url,
+        Err(err) => {
+            return VcpEndpointProbeReport {
+                category: AiEndpointCheckCategory::InvalidEndpoint,
+                detail: format!("{} ({err})", endpoint_trimmed),
+                models: Vec::new(),
+            }
+        }
+    };
+
     let mut request = ureq::get(models_endpoint.as_str())
         .timeout(AI_ENDPOINT_CHECK_TIMEOUT)
         .set("Accept", "application/json");
@@ -17651,21 +18823,66 @@ fn probe_vcp_endpoint(
     }
 
     match request.call() {
-        Ok(resp) => Ok(VcpEndpointProbeReport {
-            summary: format!(
-                "{} | /v1/models -> HTTP {}",
-                endpoint.trim(),
-                resp.status()
-            ),
-        }),
-        Err(ureq::Error::Status(code, _resp)) => Ok(VcpEndpointProbeReport {
-            summary: format!("{} | /v1/models -> HTTP {}", endpoint.trim(), code),
-        }),
-        Err(ureq::Error::Transport(err)) => Err(std::io::Error::new(
-            ErrorKind::ConnectionAborted,
-            format!("api probe failed: {err}"),
-        )),
+        Ok(resp) => VcpEndpointProbeReport {
+            category: classify_http_status_to_probe_category(resp.status()),
+            detail: format!("{} | /v1/models -> HTTP {}", endpoint_trimmed, resp.status()),
+            models: parse_vcp_models_from_json_body(resp.into_string().ok()),
+        },
+        Err(ureq::Error::Status(code, _resp)) => {
+            let category = classify_http_status_to_probe_category(code);
+            VcpEndpointProbeReport {
+                category,
+                detail: format!("{} | /v1/models -> HTTP {}", endpoint_trimmed, code),
+                models: Vec::new(),
+            }
+        }
+        Err(ureq::Error::Transport(err)) => {
+            let text = err.to_string().to_lowercase();
+            let category = if text.contains("timed out") {
+                AiEndpointCheckCategory::Timeout
+            } else if text.contains("dns") || text.contains("resolve") || text.contains("name") {
+                AiEndpointCheckCategory::InvalidEndpoint
+            } else {
+                AiEndpointCheckCategory::NetworkError
+            };
+            VcpEndpointProbeReport {
+                category,
+                detail: format!("{} (api probe failed: {err})", endpoint_trimmed),
+                models: Vec::new(),
+            }
+        }
     }
+}
+
+fn parse_vcp_models_from_json_body(body: Option<String>) -> Vec<String> {
+    let Some(body) = body else {
+        return Vec::new();
+    };
+    if body.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let parsed: serde_json::Value = match serde_json::from_str(body.as_str()) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+
+    let Some(items) = parsed.get("data").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+
+    let mut models = Vec::new();
+    for item in items {
+        if let Some(id) = item.get("id").and_then(|value| value.as_str()) {
+            let id = id.trim();
+            if !id.is_empty() {
+                models.push(id.to_string());
+            }
+        }
+    }
+    models.sort();
+    models.dedup();
+    models
 }
 
 fn build_vcp_models_endpoint(endpoint: &str) -> std::io::Result<String> {
@@ -17721,6 +18938,17 @@ fn parse_host_port_from_endpoint(endpoint: &str) -> std::io::Result<String> {
     }
 
     Ok(format!("{host_and_path}:80"))
+}
+
+fn classify_http_status_to_probe_category(code: u16) -> AiEndpointCheckCategory {
+    match code {
+        200..=299 => AiEndpointCheckCategory::Connected,
+        401 | 403 => AiEndpointCheckCategory::Unauthorized,
+        404 => AiEndpointCheckCategory::ApiPathNotFound,
+        500..=599 => AiEndpointCheckCategory::ServerError,
+        400..=499 => AiEndpointCheckCategory::ClientError,
+        _ => AiEndpointCheckCategory::UnknownError,
+    }
 }
 
 fn truncate_message(input: &str, max_chars: usize) -> String {
@@ -17913,6 +19141,30 @@ mod tests {
         assert_eq!(
             build_vcp_models_endpoint("http://127.0.0.1:5890").expect("append models path"),
             "http://127.0.0.1:5890/v1/models"
+        );
+    }
+
+    #[test]
+    fn classify_http_status_to_probe_category_maps_diagnostics() {
+        assert_eq!(
+            classify_http_status_to_probe_category(200),
+            AiEndpointCheckCategory::Connected
+        );
+        assert_eq!(
+            classify_http_status_to_probe_category(401),
+            AiEndpointCheckCategory::Unauthorized
+        );
+        assert_eq!(
+            classify_http_status_to_probe_category(404),
+            AiEndpointCheckCategory::ApiPathNotFound
+        );
+        assert_eq!(
+            classify_http_status_to_probe_category(422),
+            AiEndpointCheckCategory::ClientError
+        );
+        assert_eq!(
+            classify_http_status_to_probe_category(503),
+            AiEndpointCheckCategory::ServerError
         );
     }
 

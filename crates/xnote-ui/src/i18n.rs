@@ -228,6 +228,106 @@ fn en_us_dict() -> HashMap<&'static str, &'static str> {
             "settings.ai.connection.not_checked",
             "No connection check yet. Click 'Apply & Check'.",
         ),
+        ("settings.ai.connection.state_label", "State"),
+        (
+            "settings.ai.connection.state.not_checked",
+            "not checked",
+        ),
+        ("settings.ai.connection.state.checking", "checking"),
+        ("settings.ai.connection.state.connected", "connected"),
+        ("settings.ai.connection.state.timeout", "timeout"),
+        (
+            "settings.ai.connection.state.unauthorized",
+            "unauthorized",
+        ),
+        (
+            "settings.ai.connection.state.api_not_found",
+            "API path not found",
+        ),
+        (
+            "settings.ai.connection.state.invalid_endpoint",
+            "invalid endpoint",
+        ),
+        (
+            "settings.ai.connection.state.network_error",
+            "network error",
+        ),
+        ("settings.ai.connection.state.server_error", "server error"),
+        ("settings.ai.connection.state.client_error", "client error"),
+        ("settings.ai.connection.state.unknown_error", "unknown error"),
+        (
+            "settings.ai.connection.hint.not_checked",
+            "Apply current settings first, then run a live connection check.",
+        ),
+        (
+            "settings.ai.connection.hint.checking",
+            "Checking endpoint reachability and /v1/models response...",
+        ),
+        (
+            "settings.ai.connection.hint.connected",
+            "Connection is ready. AI Hub chat input is enabled.",
+        ),
+        (
+            "settings.ai.connection.hint.timeout",
+            "Request timed out. Check service status, local firewall, and endpoint port.",
+        ),
+        (
+            "settings.ai.connection.hint.unauthorized",
+            "API key is missing or invalid. Verify Authorization Bearer key settings.",
+        ),
+        (
+            "settings.ai.connection.hint.api_not_found",
+            "Endpoint is reachable but /v1/models is not available. Verify base URL and route mapping.",
+        ),
+        (
+            "settings.ai.connection.hint.invalid_endpoint",
+            "Endpoint format is invalid or DNS resolution failed.",
+        ),
+        (
+            "settings.ai.connection.hint.network_error",
+            "Network error during probe. Confirm service is running and reachable from this machine.",
+        ),
+        (
+            "settings.ai.connection.hint.server_error",
+            "Server responded with 5xx. Check backend logs and retry.",
+        ),
+        (
+            "settings.ai.connection.hint.client_error",
+            "Request was rejected with 4xx. Verify URL, model route, and auth settings.",
+        ),
+        (
+            "settings.ai.connection.hint.unknown_error",
+            "Probe failed with an unknown reason. Check endpoint and logs for details.",
+        ),
+        (
+            "settings.ai.status.defaults_restored",
+            "AI settings restored to defaults",
+        ),
+        ("settings.ai.endpoint.quick.6005", "Use local 6005"),
+        ("settings.ai.endpoint.quick.5890", "Use local 5890"),
+        ("settings.ai.button.custom_endpoint", "Custom endpoint"),
+        ("settings.ai.button.custom_model", "Custom model"),
+        ("settings.ai.button.paste", "Paste"),
+        ("settings.ai.button.cancel_edit", "Cancel"),
+        ("settings.ai.button.save_edit", "Save"),
+        ("settings.ai.button.reset_defaults", "Reset defaults"),
+        ("settings.ai.button.check_now", "Check now"),
+        (
+            "settings.ai.connection.models_detected",
+            "Detected models:",
+        ),
+        ("settings.ai.edit.target.label", "Editing"),
+        ("settings.ai.edit.target.endpoint", "Endpoint"),
+        ("settings.ai.edit.target.model", "Model"),
+        (
+            "settings.ai.edit.placeholder",
+            "Type value and press Save (Enter also works)",
+        ),
+        ("settings.ai.card.actions.title", "Quick actions"),
+        (
+            "settings.ai.card.actions.desc",
+            "Modern setup workflow: reset, quick presets, and immediate check.",
+        ),
         (
             "settings.files.status.external_sync_enabled",
             "External sync enabled",
@@ -724,6 +824,103 @@ fn zh_cn_dict() -> HashMap<&'static str, &'static str> {
         (
             "settings.ai.connection.not_checked",
             "No connection check yet. Click 'Apply & Check'.",
+        ),
+        ("settings.ai.connection.state_label", "状态"),
+        (
+            "settings.ai.connection.state.not_checked",
+            "未检查",
+        ),
+        ("settings.ai.connection.state.checking", "检查中"),
+        ("settings.ai.connection.state.connected", "已连接"),
+        ("settings.ai.connection.state.timeout", "超时"),
+        (
+            "settings.ai.connection.state.unauthorized",
+            "鉴权失败",
+        ),
+        (
+            "settings.ai.connection.state.api_not_found",
+            "API 路径不存在",
+        ),
+        (
+            "settings.ai.connection.state.invalid_endpoint",
+            "端点无效",
+        ),
+        (
+            "settings.ai.connection.state.network_error",
+            "网络错误",
+        ),
+        ("settings.ai.connection.state.server_error", "服务端错误"),
+        ("settings.ai.connection.state.client_error", "客户端错误"),
+        ("settings.ai.connection.state.unknown_error", "未知错误"),
+        (
+            "settings.ai.connection.hint.not_checked",
+            "请先应用当前设置，再执行一次实时连接检查。",
+        ),
+        (
+            "settings.ai.connection.hint.checking",
+            "正在检查端点可达性与 /v1/models 响应...",
+        ),
+        (
+            "settings.ai.connection.hint.connected",
+            "连接已就绪，AI Hub 对话输入已启用。",
+        ),
+        (
+            "settings.ai.connection.hint.timeout",
+            "请求超时。请检查服务状态、防火墙和端口是否可达。",
+        ),
+        (
+            "settings.ai.connection.hint.unauthorized",
+            "API Key 缺失或无效。请检查 Bearer 鉴权配置。",
+        ),
+        (
+            "settings.ai.connection.hint.api_not_found",
+            "端点可达但 /v1/models 不可用。请检查基础 URL 与路由映射。",
+        ),
+        (
+            "settings.ai.connection.hint.invalid_endpoint",
+            "端点格式无效，或 DNS 解析失败。",
+        ),
+        (
+            "settings.ai.connection.hint.network_error",
+            "探活发生网络错误。请确认服务已启动并且本机可访问。",
+        ),
+        (
+            "settings.ai.connection.hint.server_error",
+            "服务端返回 5xx。请检查后端日志后重试。",
+        ),
+        (
+            "settings.ai.connection.hint.client_error",
+            "请求返回 4xx。请检查 URL、模型路由与鉴权配置。",
+        ),
+        (
+            "settings.ai.connection.hint.unknown_error",
+            "探活失败，原因未知。请结合端点配置与日志继续排查。",
+        ),
+        (
+            "settings.ai.status.defaults_restored",
+            "AI 设置已恢复为默认值",
+        ),
+        ("settings.ai.endpoint.quick.6005", "使用本地 6005"),
+        ("settings.ai.endpoint.quick.5890", "使用本地 5890"),
+        ("settings.ai.button.custom_endpoint", "自定义端点"),
+        ("settings.ai.button.custom_model", "自定义模型"),
+        ("settings.ai.button.paste", "粘贴"),
+        ("settings.ai.button.cancel_edit", "取消"),
+        ("settings.ai.button.save_edit", "保存"),
+        ("settings.ai.button.reset_defaults", "恢复默认"),
+        ("settings.ai.button.check_now", "立即检测"),
+        ("settings.ai.connection.models_detected", "已探测模型："),
+        ("settings.ai.edit.target.label", "当前编辑"),
+        ("settings.ai.edit.target.endpoint", "端点"),
+        ("settings.ai.edit.target.model", "模型"),
+        (
+            "settings.ai.edit.placeholder",
+            "输入值后点击保存（也可按 Enter）",
+        ),
+        ("settings.ai.card.actions.title", "快捷操作"),
+        (
+            "settings.ai.card.actions.desc",
+            "按现代设置流程提供：重置、预设切换与即时检测。",
         ),
         (
             "ai.hub.ui.input.disabled_placeholder",
