@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 use sysinfo::{Pid, System};
+use xnote_core::ai::generate_default_ai_tool_descriptor_bundle_json_pretty;
 use xnote_core::knowledge::{KnowledgeIndex, SearchOptions};
 use xnote_core::vault::Vault;
 use xnote_core::watch::{
@@ -23,6 +24,7 @@ fn main() -> Result<()> {
         "gen-vault" => cmd_gen_vault(args.collect()),
         "perf" => cmd_perf(args.collect()),
         "foundation-gate" => cmd_foundation_gate(args.collect()),
+        "export-ai-tools" => cmd_export_ai_tools(args.collect()),
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -42,17 +44,57 @@ Commands:
   gen-vault   Generate a large Knowledge vault dataset
   perf        Print basic perf metrics (open/scan/index/search/watch)
   foundation-gate  Run full baseline gate (tests/check/perf profiles)
+  export-ai-tools  Export VCP/MCP tool descriptors from xnote-core registry
 
 Examples:
   cargo run -p xtask -- gen-vault --path .\\Knowledge.vault --notes 100000 --max-depth 200 --clean
   cargo run -p xtask -- perf --path .\\Knowledge.vault --query n0
   cargo run -p xtask -- foundation-gate --path .\\Knowledge.vault --query note --iterations 10
+  cargo run -p xtask -- export-ai-tools --out .\\docs\\ai_tools_bundle.json
+  cargo run -p xtask -- export-ai-tools
 
 XNote UI:
   $env:XNOTE_VAULT = "C:\path\to\Knowledge.vault"
   cargo run -p xnote-ui
 "#
     );
+}
+
+fn cmd_export_ai_tools(args: Vec<String>) -> Result<()> {
+    let output_path = parse_export_ai_tools_args(args)?;
+    let payload = generate_default_ai_tool_descriptor_bundle_json_pretty()?;
+
+    if let Some(path) = output_path {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("create_dir_all: {}", parent.display()))?;
+            }
+        }
+        fs::write(&path, payload).with_context(|| format!("write: {}", path.display()))?;
+        eprintln!("export-ai-tools: wrote {}", path.display());
+    } else {
+        println!("{payload}");
+    }
+
+    Ok(())
+}
+
+fn parse_export_ai_tools_args(args: Vec<String>) -> Result<Option<PathBuf>> {
+    let mut out: Option<PathBuf> = None;
+
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--out" => {
+                out = Some(PathBuf::from(it.next().context("--out requires a value")?));
+            }
+            "--stdout" => out = None,
+            other => bail!("unknown export-ai-tools arg: {other}"),
+        }
+    }
+
+    Ok(out)
 }
 
 #[derive(Clone)]

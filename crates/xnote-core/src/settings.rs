@@ -29,7 +29,23 @@ pub struct AppSettings {
     #[serde(default)]
     pub plugin_policy: AppPluginPolicy,
     #[serde(default)]
+    pub ai: AiSettings,
+    #[serde(default)]
     pub window_layout: WindowLayoutSettings,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiSettings {
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+    #[serde(default = "default_ai_vcp_url")]
+    pub vcp_url: String,
+    #[serde(default)]
+    pub vcp_key: String,
+    #[serde(default = "default_ai_vcp_model")]
+    pub vcp_model: String,
+    #[serde(default)]
+    pub vcp_tool_injection: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,6 +156,18 @@ impl Default for FilesLinksSettings {
     }
 }
 
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            provider: default_ai_provider(),
+            vcp_url: default_ai_vcp_url(),
+            vcp_key: String::new(),
+            vcp_model: default_ai_vcp_model(),
+            vcp_tool_injection: false,
+        }
+    }
+}
+
 impl Default for WindowLayoutSettings {
     fn default() -> Self {
         Self {
@@ -188,6 +216,7 @@ impl Default for AppSettings {
             keymap_overrides: HashMap::new(),
             keymap_contextual: Vec::new(),
             plugin_policy: AppPluginPolicy::default(),
+            ai: AiSettings::default(),
             window_layout: WindowLayoutSettings::default(),
         }
     }
@@ -272,6 +301,19 @@ impl AppSettings {
         }
 
         merged.plugin_policy = overlay.plugin_policy.clone();
+        if !overlay.ai.provider.trim().is_empty() {
+            merged.ai.provider = overlay.ai.provider.clone();
+        }
+        if !overlay.ai.vcp_url.trim().is_empty() {
+            merged.ai.vcp_url = overlay.ai.vcp_url.clone();
+        }
+        if !overlay.ai.vcp_key.trim().is_empty() {
+            merged.ai.vcp_key = overlay.ai.vcp_key.clone();
+        }
+        if !overlay.ai.vcp_model.trim().is_empty() {
+            merged.ai.vcp_model = overlay.ai.vcp_model.clone();
+        }
+        merged.ai.vcp_tool_injection = overlay.ai.vcp_tool_injection;
         merged.window_layout.merge_overlay(&overlay.window_layout);
         merged
     }
@@ -441,6 +483,18 @@ const fn default_activation_timeout_ms() -> u64 {
     2000
 }
 
+fn default_ai_provider() -> String {
+    "mock".to_string()
+}
+
+fn default_ai_vcp_url() -> String {
+    "http://127.0.0.1:5890".to_string()
+}
+
+fn default_ai_vcp_model() -> String {
+    "gemini-2.5-flash-preview-05-20".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,6 +536,11 @@ mod tests {
         settings.editor.autosave_delay_ms = 1200;
         settings.files_links.external_sync = false;
         settings.files_links.prefer_wikilink_titles = false;
+        settings.ai.provider = "vcp".to_string();
+        settings.ai.vcp_url = "http://127.0.0.1:5890".to_string();
+        settings.ai.vcp_key = "test-key".to_string();
+        settings.ai.vcp_model = "test-model".to_string();
+        settings.ai.vcp_tool_injection = true;
         settings.bookmarked_notes.push("notes/Alpha.md".to_string());
         settings
             .keymap_overrides
@@ -542,6 +601,10 @@ mod tests {
             ..AppSettings::default()
         };
         project.editor.autosave_delay_ms = 900;
+        project.ai.provider = "vcp".to_string();
+        project.ai.vcp_url = "http://127.0.0.1:5891".to_string();
+        project.ai.vcp_model = "project-model".to_string();
+        project.ai.vcp_tool_injection = true;
         project.bookmarked_notes.push("notes/Beta.md".to_string());
         project
             .keymap_overrides
@@ -586,6 +649,10 @@ mod tests {
         assert_eq!(effective.locale, "zh-CN");
         assert_eq!(effective.appearance.theme, "dark");
         assert_eq!(effective.editor.autosave_delay_ms, 900);
+        assert_eq!(effective.ai.provider, "vcp");
+        assert_eq!(effective.ai.vcp_url, "http://127.0.0.1:5891");
+        assert_eq!(effective.ai.vcp_model, "project-model");
+        assert!(effective.ai.vcp_tool_injection);
         assert!(effective
             .bookmarked_notes
             .iter()
