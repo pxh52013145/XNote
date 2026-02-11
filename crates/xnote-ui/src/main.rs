@@ -19,8 +19,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::ErrorKind;
-use std::net::{TcpStream, ToSocketAddrs};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -54,6 +52,10 @@ use xnote_core::plugin::{
 use xnote_core::settings::{
     load_effective_settings, project_settings_path, save_project_settings, save_settings,
     settings_path, AppSettings, WindowLayoutSettings,
+};
+use xnote_core::vcp::{
+    fetch_vcp_admin_snapshot, infer_vcp_ws_endpoint, probe_vcp_runtime, VcpHealthCategory,
+    VcpRuntimeConfig,
 };
 use xnote_core::vault::{NoteEntry, Vault, VaultScan};
 use xnote_core::watch::{expand_note_move_pairs_with_prefix, VaultWatchChange, VaultWatcher};
@@ -121,6 +123,7 @@ const EDITOR_SURFACE_RIGHT_PADDING: f32 = 18.0;
 const EDITOR_GUTTER_STABLE_DIGITS_MAX_9999: usize = 4;
 const WINDOW_LAYOUT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(320);
 const AI_HUB_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
+const AI_HUB_DATA_REFRESH_INTERVAL: Duration = Duration::from_secs(8);
 const WINDOW_DEFAULT_WIDTH_PX: u32 = 1200;
 const WINDOW_DEFAULT_HEIGHT_PX: u32 = 760;
 const WINDOW_MIN_WIDTH_PX: u32 = 820;
@@ -144,7 +147,6 @@ const AI_HUB_MAX_MESSAGES: usize = 96;
 const DEFAULT_AI_PROVIDER: &str = "mock";
 const DEFAULT_AI_VCP_URL: &str = "http://127.0.0.1:5890";
 const DEFAULT_AI_VCP_MODEL: &str = "gemini-2.5-flash-preview-05-20";
-const AI_ENDPOINT_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EditorViewMode {
@@ -496,6 +498,12 @@ struct AiHubMessage {
     role: AiHubMessageRole,
     content: SharedString,
     timestamp_label: SharedString,
+}
+
+#[derive(Clone, Debug)]
+struct AiHubMetaItem {
+    title: SharedString,
+    detail: SharedString,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -890,6 +898,7 @@ enum SettingsSection {
 enum AiEndpointCheckCategory {
     NotChecked,
     Checking,
+    PartiallyConnected,
     Connected,
     Timeout,
     Unauthorized,
@@ -903,14 +912,27 @@ enum AiEndpointCheckCategory {
 
 impl AiEndpointCheckCategory {
     const fn is_connected(self) -> bool {
-        matches!(self, Self::Connected)
+        matches!(self, Self::Connected | Self::PartiallyConnected)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AiHubPane {
+    Chat,
+    Agents,
+    Tools,
+    Memory,
+    Tasks,
+    Nodes,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AiSettingsEditField {
     Endpoint,
     Model,
+    AdminEndpoint,
+    AdminAuth,
+    TimeoutMs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1136,6 +1158,21 @@ struct XnoteWindow {
     ai_hub_connection_popup_backdrop_armed_until: Option<Instant>,
     ai_settings_editing_field: Option<AiSettingsEditField>,
     ai_settings_edit_buffer: String,
+    ai_hub_active_pane: AiHubPane,
+    next_ai_snapshot_nonce: u64,
+    pending_ai_snapshot_nonce: u64,
+    ai_runtime_models: Vec<String>,
+    ai_runtime_agents: Vec<String>,
+    ai_runtime_plugins: Vec<String>,
+    ai_runtime_rag_tags: Vec<String>,
+    ai_runtime_schedules: Vec<String>,
+    ai_runtime_clusters: Vec<String>,
+    ai_runtime_config_items: Vec<AiHubMetaItem>,
+    ai_runtime_metrics: Vec<AiHubMetaItem>,
+    ai_runtime_warnings: Vec<String>,
+    ai_runtime_last_sync_label: SharedString,
+    ai_runtime_sync_in_progress: bool,
+    ai_runtime_auto_refresh: bool,
     next_note_save_nonce: u64,
     pending_note_save_nonce: u64,
     status: SharedString,
@@ -1379,6 +1416,21 @@ impl XnoteWindow {
             ai_hub_connection_popup_backdrop_armed_until: None,
             ai_settings_editing_field: None,
             ai_settings_edit_buffer: String::new(),
+            ai_hub_active_pane: AiHubPane::Chat,
+            next_ai_snapshot_nonce: 0,
+            pending_ai_snapshot_nonce: 0,
+            ai_runtime_models: Vec::new(),
+            ai_runtime_agents: Vec::new(),
+            ai_runtime_plugins: Vec::new(),
+            ai_runtime_rag_tags: Vec::new(),
+            ai_runtime_schedules: Vec::new(),
+            ai_runtime_clusters: Vec::new(),
+            ai_runtime_config_items: Vec::new(),
+            ai_runtime_metrics: Vec::new(),
+            ai_runtime_warnings: Vec::new(),
+            ai_runtime_last_sync_label: SharedString::from(""),
+            ai_runtime_sync_in_progress: false,
+            ai_runtime_auto_refresh: true,
             next_note_save_nonce: 0,
             pending_note_save_nonce: 0,
             status: SharedString::from(i18n.text("status.ready")),
@@ -1520,6 +1572,7 @@ impl XnoteWindow {
 
         this.schedule_watch_event_drain(cx);
         this.schedule_ai_hub_caret_blink(cx);
+        this.schedule_ai_hub_runtime_refresh(cx);
         this.schedule_cache_diagnostics_flush(cx);
 
         this
@@ -4217,15 +4270,67 @@ impl XnoteWindow {
                 "false"
             },
         );
+
+        let admin_url = self.app_settings.ai.vcp_admin_url.trim();
+        if admin_url.is_empty() {
+            std::env::remove_var("XNOTE_AI_VCP_ADMIN_URL");
+        } else {
+            std::env::set_var("XNOTE_AI_VCP_ADMIN_URL", admin_url);
+        }
+
+        let admin_auth = self.app_settings.ai.vcp_admin_auth.trim();
+        if admin_auth.is_empty() {
+            std::env::remove_var("XNOTE_AI_VCP_ADMIN_AUTH");
+        } else {
+            std::env::set_var("XNOTE_AI_VCP_ADMIN_AUTH", admin_auth);
+        }
+
+        std::env::set_var(
+            "XNOTE_AI_VCP_TIMEOUT_MS",
+            self.app_settings
+                .ai
+                .vcp_request_timeout_ms
+                .max(200)
+                .to_string(),
+        );
+
+        std::env::set_var(
+            "XNOTE_AI_VCP_SYNC_WS",
+            if self.app_settings.ai.vcp_sync_ws {
+                "true"
+            } else {
+                "false"
+            },
+        );
     }
 
-    fn run_ai_endpoint_check(&mut self, cx: &mut Context<Self>) {
-        let endpoint = if self.app_settings.ai.vcp_url.trim().is_empty() {
+    fn ai_runtime_config(&self) -> VcpRuntimeConfig {
+        let chat_endpoint = if self.app_settings.ai.vcp_url.trim().is_empty() {
             DEFAULT_AI_VCP_URL.to_string()
         } else {
             self.app_settings.ai.vcp_url.trim().to_string()
         };
-        let api_key = self.app_settings.ai.vcp_key.trim().to_string();
+        let admin_endpoint = if self.app_settings.ai.vcp_admin_url.trim().is_empty() {
+            infer_admin_endpoint_from_chat_url(chat_endpoint.as_str())
+        } else {
+            self.app_settings.ai.vcp_admin_url.trim().to_string()
+        };
+
+        VcpRuntimeConfig {
+            chat_endpoint,
+            api_key: Some(self.app_settings.ai.vcp_key.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            admin_endpoint,
+            admin_auth_header: Some(self.app_settings.ai.vcp_admin_auth.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            timeout_ms: self.app_settings.ai.vcp_request_timeout_ms.max(200),
+        }
+    }
+
+    fn run_ai_endpoint_check(&mut self, cx: &mut Context<Self>) {
+        let runtime_config = self.ai_runtime_config();
+        let endpoint = runtime_config.normalized_chat_endpoint();
+        let admin_endpoint = runtime_config.normalized_admin_endpoint();
 
         self.next_ai_endpoint_check_nonce = self.next_ai_endpoint_check_nonce.wrapping_add(1);
         let check_nonce = self.next_ai_endpoint_check_nonce;
@@ -4242,19 +4347,11 @@ impl XnoteWindow {
         cx.spawn(
             move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let mut cx = cx.clone();
-                let endpoint_for_check = endpoint.clone();
-                let api_key_for_check = api_key.clone();
+                let runtime_config_for_check = runtime_config.clone();
                 async move {
                     let report = cx
                         .background_executor()
-                        .spawn(async move {
-                            let key = if api_key_for_check.trim().is_empty() {
-                                None
-                            } else {
-                                Some(api_key_for_check.as_str())
-                            };
-                            probe_vcp_endpoint(endpoint_for_check.as_str(), key)
-                        })
+                        .spawn(async move { probe_vcp_runtime(&runtime_config_for_check) })
                         .await;
 
                     this.update(&mut cx, |this, cx| {
@@ -4263,8 +4360,17 @@ impl XnoteWindow {
                         }
 
                         this.pending_ai_endpoint_check_nonce = 0;
-                        let connected = report.category.is_connected();
-                        let status_line = if connected {
+                        let chat_connected = report.chat.category.is_connected();
+                        let admin_connected = report.admin.category.is_connected();
+                        let category = if chat_connected && admin_connected {
+                            AiEndpointCheckCategory::Connected
+                        } else if chat_connected {
+                            AiEndpointCheckCategory::PartiallyConnected
+                        } else {
+                            ai_category_from_vcp_health(report.chat.category)
+                        };
+
+                        let status_line = if chat_connected {
                             format!(
                                 "{} {}",
                                 this.i18n.text("settings.ai.status.endpoint_ok"),
@@ -4278,9 +4384,14 @@ impl XnoteWindow {
                             )
                         };
 
-                        this.ai_endpoint_check_result = Some(connected);
-                        this.ai_endpoint_check_category = report.category;
-                        this.ai_endpoint_check_message = SharedString::from(report.detail);
+                        this.ai_endpoint_check_result = Some(chat_connected);
+                        this.ai_endpoint_check_category = category;
+                        this.ai_endpoint_check_message = SharedString::from(format!(
+                            "chat: {} | admin: {} | admin_base: {}",
+                            report.chat.detail,
+                            report.admin.detail,
+                            admin_endpoint
+                        ));
                         let mut next_models = report.models;
                         if !next_models.is_empty() {
                             let endpoint_model = this.app_settings.ai.vcp_model.trim();
@@ -4292,6 +4403,9 @@ impl XnoteWindow {
                         }
                         this.ai_endpoint_check_models = next_models;
                         this.status = SharedString::from(status_line);
+                        if chat_connected {
+                            this.refresh_ai_runtime_snapshot(false, cx);
+                        }
 
                         cx.notify();
                     })
@@ -4299,6 +4413,110 @@ impl XnoteWindow {
                 }
             },
         )
+        .detach();
+    }
+
+    fn refresh_ai_runtime_snapshot(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.ai_runtime_sync_in_progress {
+            return;
+        }
+        if !force && !self.ai_endpoint_check_category.is_connected() {
+            return;
+        }
+
+        let runtime_config = self.ai_runtime_config();
+        self.next_ai_snapshot_nonce = self.next_ai_snapshot_nonce.wrapping_add(1);
+        let snapshot_nonce = self.next_ai_snapshot_nonce;
+        self.pending_ai_snapshot_nonce = snapshot_nonce;
+        self.ai_runtime_sync_in_progress = true;
+
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                let runtime_config_for_fetch = runtime_config.clone();
+                async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { fetch_vcp_admin_snapshot(&runtime_config_for_fetch) })
+                        .await;
+
+                    this.update(&mut cx, |this, cx| {
+                        if this.pending_ai_snapshot_nonce != snapshot_nonce {
+                            return;
+                        }
+
+                        this.pending_ai_snapshot_nonce = 0;
+                        this.ai_runtime_sync_in_progress = false;
+
+                        match result {
+                            Ok(snapshot) => {
+                                this.ai_runtime_models = snapshot.models;
+                                this.ai_runtime_agents = snapshot.agents;
+                                this.ai_runtime_plugins = snapshot
+                                    .plugins
+                                    .iter()
+                                    .map(|item| match item.enabled {
+                                        Some(true) => format!("{} (enabled)", item.name),
+                                        Some(false) => format!("{} (disabled)", item.name),
+                                        None => item.name.clone(),
+                                    })
+                                    .collect();
+                                this.ai_runtime_rag_tags = snapshot.rag_tags;
+                                this.ai_runtime_schedules = snapshot.schedules;
+                                this.ai_runtime_clusters = snapshot.clusters;
+                                this.ai_runtime_config_items = snapshot
+                                    .config_items
+                                    .into_iter()
+                                    .map(|item| AiHubMetaItem {
+                                        title: SharedString::from(item.key),
+                                        detail: SharedString::from(item.value),
+                                    })
+                                    .collect();
+                                this.ai_runtime_metrics = snapshot
+                                    .system_metrics
+                                    .into_iter()
+                                    .map(|item| AiHubMetaItem {
+                                        title: SharedString::from(item.key),
+                                        detail: SharedString::from(item.value),
+                                    })
+                                    .collect();
+                                this.ai_runtime_warnings = snapshot.warnings;
+                                this.ai_runtime_last_sync_label =
+                                    SharedString::from(build_clock_label(current_epoch_secs()));
+                            }
+                            Err(err) => {
+                                this.ai_runtime_warnings.push(format!("snapshot error: {err}"));
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            },
+        )
+        .detach();
+    }
+
+    fn schedule_ai_hub_runtime_refresh(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(|this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            let mut cx = cx.clone();
+            async move {
+                loop {
+                    Timer::after(AI_HUB_DATA_REFRESH_INTERVAL).await;
+                    this.update(&mut cx, |this, cx| {
+                        if !this.ai_runtime_auto_refresh {
+                            return;
+                        }
+                        if this.ai_endpoint_check_category.is_connected()
+                            && !this.ai_runtime_sync_in_progress
+                        {
+                            this.refresh_ai_runtime_snapshot(false, cx);
+                        }
+                    })
+                    .ok();
+                }
+            }
+        })
         .detach();
     }
 
@@ -4387,11 +4605,49 @@ impl XnoteWindow {
         normalized
     }
 
+    fn set_ai_admin_endpoint_value(&mut self, endpoint: &str) -> String {
+        let normalized = infer_admin_endpoint_from_chat_url(endpoint);
+        self.app_settings.ai.vcp_admin_url = normalized.clone();
+        self.persist_settings();
+        self.sync_ai_settings_env();
+        self.reset_ai_endpoint_check_state();
+        normalized
+    }
+
+    fn set_ai_admin_auth_value(&mut self, auth_header: &str) -> String {
+        let normalized = auth_header.trim().to_string();
+        self.app_settings.ai.vcp_admin_auth = normalized.clone();
+        self.persist_settings();
+        self.sync_ai_settings_env();
+        self.reset_ai_endpoint_check_state();
+        normalized
+    }
+
+    fn set_ai_timeout_ms_value(&mut self, timeout_ms: u64) -> u64 {
+        let normalized = timeout_ms.clamp(200, 60_000);
+        self.app_settings.ai.vcp_request_timeout_ms = normalized;
+        self.persist_settings();
+        self.sync_ai_settings_env();
+        self.reset_ai_endpoint_check_state();
+        normalized
+    }
+
+    fn set_ai_sync_ws_value(&mut self, enabled: bool) -> bool {
+        self.app_settings.ai.vcp_sync_ws = enabled;
+        self.persist_settings();
+        self.sync_ai_settings_env();
+        enabled
+    }
+
     fn reset_ai_settings_defaults(&mut self, cx: &mut Context<Self>) {
         self.app_settings.ai.provider = DEFAULT_AI_PROVIDER.to_string();
         self.app_settings.ai.vcp_url = DEFAULT_AI_VCP_URL.to_string();
         self.app_settings.ai.vcp_model = DEFAULT_AI_VCP_MODEL.to_string();
         self.app_settings.ai.vcp_tool_injection = false;
+        self.app_settings.ai.vcp_admin_url = infer_admin_endpoint_from_chat_url(DEFAULT_AI_VCP_URL);
+        self.app_settings.ai.vcp_admin_auth = String::new();
+        self.app_settings.ai.vcp_request_timeout_ms = 2_000;
+        self.app_settings.ai.vcp_sync_ws = true;
         self.persist_settings();
         self.sync_ai_settings_env();
         self.reset_ai_endpoint_check_state();
@@ -4418,6 +4674,20 @@ impl XnoteWindow {
                     self.app_settings.ai.vcp_model.trim().to_string()
                 }
             }
+            AiSettingsEditField::AdminEndpoint => {
+                if self.app_settings.ai.vcp_admin_url.trim().is_empty() {
+                    infer_admin_endpoint_from_chat_url(self.app_settings.ai.vcp_url.trim())
+                } else {
+                    self.app_settings.ai.vcp_admin_url.trim().to_string()
+                }
+            }
+            AiSettingsEditField::AdminAuth => self.app_settings.ai.vcp_admin_auth.trim().to_string(),
+            AiSettingsEditField::TimeoutMs => self
+                .app_settings
+                .ai
+                .vcp_request_timeout_ms
+                .max(200)
+                .to_string(),
         };
     }
 
@@ -4435,6 +4705,9 @@ impl XnoteWindow {
         match field {
             AiSettingsEditField::Endpoint => {
                 let normalized = self.set_ai_endpoint_value(edit_buffer.as_str());
+                if self.app_settings.ai.vcp_admin_url.trim().is_empty() {
+                    self.set_ai_admin_endpoint_value(normalized.as_str());
+                }
                 self.status = SharedString::from(format!(
                     "{} {}",
                     self.i18n.text("settings.ai.status.endpoint_set"),
@@ -4446,6 +4719,27 @@ impl XnoteWindow {
                 self.status = SharedString::from(format!(
                     "{} {}",
                     self.i18n.text("settings.ai.status.model_set"),
+                    normalized
+                ));
+            }
+            AiSettingsEditField::AdminEndpoint => {
+                let normalized = self.set_ai_admin_endpoint_value(edit_buffer.as_str());
+                self.status = SharedString::from(format!(
+                    "{} {}",
+                    self.i18n.text("settings.ai.status.admin_endpoint_set"),
+                    normalized
+                ));
+            }
+            AiSettingsEditField::AdminAuth => {
+                self.set_ai_admin_auth_value(edit_buffer.as_str());
+                self.status = SharedString::from(self.i18n.text("settings.ai.status.admin_auth_set"));
+            }
+            AiSettingsEditField::TimeoutMs => {
+                let parsed = edit_buffer.trim().parse::<u64>().ok().unwrap_or(2_000);
+                let normalized = self.set_ai_timeout_ms_value(parsed);
+                self.status = SharedString::from(format!(
+                    "{} {}ms",
+                    self.i18n.text("settings.ai.status.timeout_set"),
                     normalized
                 ));
             }
@@ -5222,7 +5516,9 @@ impl XnoteWindow {
 
     fn ai_hub_connection_block_reason(&self) -> String {
         match self.ai_endpoint_check_category {
-            AiEndpointCheckCategory::Connected => String::new(),
+            AiEndpointCheckCategory::Connected | AiEndpointCheckCategory::PartiallyConnected => {
+                String::new()
+            }
             AiEndpointCheckCategory::NotChecked | AiEndpointCheckCategory::Checking => {
                 self.i18n.text("ai.hub.error.vcp_not_checked")
             }
@@ -7102,6 +7398,10 @@ impl XnoteWindow {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if self.ai_hub_active_pane != AiHubPane::Chat && self.ai_hub_input_active {
+            self.ai_hub_set_input_active(false);
+        }
+
         let role_user = self.i18n.text("ai.hub.ui.role.user");
         let role_assistant = self.i18n.text("ai.hub.ui.role.assistant");
         let role_system = self.i18n.text("ai.hub.ui.role.system");
@@ -7214,7 +7514,9 @@ impl XnoteWindow {
         self.ai_hub_normalize_cursor();
         let input_empty = self.ai_chat_input.is_empty();
         let cursor = self.ai_hub_cursor_offset.min(self.ai_chat_input.len());
-        let ai_input_focused = self.ai_hub_input_active && self.ai_hub_input_focus_handle.is_focused(window);
+        let ai_input_focused = self.ai_hub_active_pane == AiHubPane::Chat
+            && self.ai_hub_input_active
+            && self.ai_hub_input_focus_handle.is_focused(window);
         if self.ai_hub_input_active && !self.ai_hub_input_focus_handle.is_focused(window) {
             self.ai_hub_set_input_active(false);
         }
@@ -7319,6 +7621,9 @@ impl XnoteWindow {
                         CursorStyle::OperationNotAllowed
                     })
                     .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                        if this.ai_hub_active_pane != AiHubPane::Chat {
+                            return;
+                        }
                         this.ai_hub_input_needs_focus = this.ai_hub_chat_enabled();
                         if this.ai_hub_chat_enabled() {
                             this.ai_hub_set_input_active(true);
@@ -7328,6 +7633,9 @@ impl XnoteWindow {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _ev: &MouseDownEvent, window, cx| {
+                            if this.ai_hub_active_pane != AiHubPane::Chat {
+                                return;
+                            }
                             if this.ai_hub_chat_enabled() {
                                 this.ai_hub_input_needs_focus = true;
                                 this.ai_hub_set_input_active(true);
@@ -7465,6 +7773,515 @@ impl XnoteWindow {
                     })),
             );
 
+        let pane_button =
+            |id: &'static str,
+             pane: AiHubPane,
+             icon: &'static str,
+             label: String,
+             this: &mut Self,
+             cx: &mut Context<Self>| {
+                let active = this.ai_hub_active_pane == pane;
+                div()
+                    .id(id)
+                    .h(px(34.))
+                    .w_full()
+                    .px(px(10.))
+                    .bg(if active {
+                        rgb(ui_theme.accent_soft)
+                    } else {
+                        rgb(ui_theme.surface_bg)
+                    })
+                    .border_1()
+                    .border_color(rgb(if active {
+                        ui_theme.accent
+                    } else {
+                        ui_theme.border
+                    }))
+                    .cursor_pointer()
+                    .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.ai_hub_active_pane = pane;
+                        if pane != AiHubPane::Chat {
+                            this.ai_hub_set_input_active(false);
+                            this.ai_hub_input_needs_focus = false;
+                        } else if this.ai_hub_chat_enabled() {
+                            this.ai_hub_input_needs_focus = true;
+                        }
+                        cx.notify();
+                    }))
+                    .child(ui_icon(icon, 14., if active { ui_theme.accent } else { ui_theme.text_muted }))
+                    .child(
+                        div()
+                            .font_family("Inter")
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(760.))
+                            .text_color(rgb(ui_theme.text_primary))
+                            .child(label),
+                    )
+            };
+
+        let pane_sidebar = div()
+            .w(px(200.))
+            .min_w(px(200.))
+            .max_w(px(200.))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(ui_theme.surface_bg))
+            .border_r_1()
+            .border_color(rgb(ui_theme.border))
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .font_family("IBM Plex Mono")
+                    .text_size(px(11.))
+                    .font_weight(FontWeight(820.))
+                    .text_color(rgb(ui_theme.text_muted))
+                    .child("VCP WORKSPACE"),
+            )
+            .child(pane_button(
+                "ai_hub.pane.chat",
+                AiHubPane::Chat,
+                ICON_COMMAND,
+                self.i18n.text("ai.hub.pane.chat"),
+                self,
+                cx,
+            ))
+            .child(pane_button(
+                "ai_hub.pane.agents",
+                AiHubPane::Agents,
+                ICON_USER,
+                self.i18n.text("ai.hub.pane.agents"),
+                self,
+                cx,
+            ))
+            .child(pane_button(
+                "ai_hub.pane.tools",
+                AiHubPane::Tools,
+                ICON_FILE_COG,
+                self.i18n.text("ai.hub.pane.tools"),
+                self,
+                cx,
+            ))
+            .child(pane_button(
+                "ai_hub.pane.memory",
+                AiHubPane::Memory,
+                ICON_BOOKMARK,
+                self.i18n.text("ai.hub.pane.memory"),
+                self,
+                cx,
+            ))
+            .child(pane_button(
+                "ai_hub.pane.tasks",
+                AiHubPane::Tasks,
+                ICON_GRID_2X2,
+                self.i18n.text("ai.hub.pane.tasks"),
+                self,
+                cx,
+            ))
+            .child(pane_button(
+                "ai_hub.pane.nodes",
+                AiHubPane::Nodes,
+                ICON_VAULT,
+                self.i18n.text("ai.hub.pane.nodes"),
+                self,
+                cx,
+            ))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("ai_hub.open_settings")
+                    .h(px(34.))
+                    .w_full()
+                    .px(px(10.))
+                    .bg(rgb(ui_theme.surface_alt_bg))
+                    .border_1()
+                    .border_color(rgb(ui_theme.border))
+                    .cursor_pointer()
+                    .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.open_settings_overlay(SettingsSection::Ai);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .font_family("Inter")
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(760.))
+                            .text_color(rgb(ui_theme.text_primary))
+                            .child(self.i18n.text("ai.hub.action.open_settings")),
+                    ),
+            );
+
+        let connection_state = match self.ai_endpoint_check_category {
+            AiEndpointCheckCategory::Checking => self.i18n.text("ai.hub.meta.connection.checking"),
+            AiEndpointCheckCategory::Connected => self.i18n.text("ai.hub.meta.connection.connected"),
+            AiEndpointCheckCategory::PartiallyConnected => {
+                self.i18n.text("ai.hub.meta.connection.partial")
+            }
+            _ => self.i18n.text("ai.hub.meta.connection.offline"),
+        };
+
+        let top_meta = div()
+            .w_full()
+            .h(px(38.))
+            .px(px(10.))
+            .bg(rgb(ui_theme.surface_bg))
+            .border_1()
+            .border_color(rgb(ui_theme.border))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .font_family("IBM Plex Mono")
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(760.))
+                            .text_color(rgb(ui_theme.text_muted))
+                            .child(format!(
+                                "{}: {}",
+                                self.i18n.text("ai.hub.meta.connection"),
+                                connection_state
+                            )),
+                    )
+                    .child(
+                        div()
+                            .font_family("IBM Plex Mono")
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(rgb(ui_theme.text_subtle))
+                            .child(format!(
+                                "{}: {}",
+                                self.i18n.text("ai.hub.meta.last_sync"),
+                                if self.ai_runtime_last_sync_label.as_ref().is_empty() {
+                                    self.i18n.text("ai.hub.meta.last_sync.never")
+                                } else {
+                                    self.ai_runtime_last_sync_label.to_string()
+                                }
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("ai_hub.meta.auto_refresh.toggle")
+                            .h(px(28.))
+                            .px(px(10.))
+                            .bg(if self.ai_runtime_auto_refresh {
+                                rgb(ui_theme.accent_soft)
+                            } else {
+                                rgb(ui_theme.surface_alt_bg)
+                            })
+                            .border_1()
+                            .border_color(rgb(ui_theme.border))
+                            .cursor_pointer()
+                            .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                this.ai_runtime_auto_refresh = !this.ai_runtime_auto_refresh;
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .font_family("Inter")
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight(760.))
+                                    .text_color(rgb(ui_theme.text_primary))
+                                    .child(if self.ai_runtime_auto_refresh {
+                                        self.i18n.text("ai.hub.meta.auto_refresh.on")
+                                    } else {
+                                        self.i18n.text("ai.hub.meta.auto_refresh.off")
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("ai_hub.meta.refresh_now")
+                            .h(px(28.))
+                            .px(px(10.))
+                            .bg(rgb(ui_theme.surface_alt_bg))
+                            .border_1()
+                            .border_color(rgb(ui_theme.border))
+                            .cursor_pointer()
+                            .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                this.refresh_ai_runtime_snapshot(true, cx);
+                            }))
+                            .child(
+                                div()
+                                    .font_family("Inter")
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight(760.))
+                                    .text_color(rgb(ui_theme.text_primary))
+                                    .child(if self.ai_runtime_sync_in_progress {
+                                        self.i18n.text("ai.hub.meta.refreshing")
+                                    } else {
+                                        self.i18n.text("ai.hub.meta.refresh")
+                                    }),
+                            ),
+                    ),
+            );
+
+        let build_list_section =
+            |id: &'static str,
+             title: String,
+             lines: Vec<String>,
+             ui_theme: UiTheme,
+             empty_text: String|
+             -> gpui::AnyElement {
+                let rows = if lines.is_empty() {
+                    vec![div()
+                        .font_family("Inter")
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(650.))
+                        .text_color(rgb(ui_theme.text_muted))
+                        .child(empty_text)
+                        .into_any_element()]
+                } else {
+                    lines
+                        .into_iter()
+                        .take(120)
+                        .enumerate()
+                        .map(|(ix, line)| {
+                            div()
+                                .id(ElementId::named_usize(id, ix))
+                                .h(px(30.))
+                                .w_full()
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.border))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(ui_theme.text_primary))
+                                        .child(line),
+                                )
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
+                };
+
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .font_family("Inter")
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(820.))
+                            .text_color(rgb(ui_theme.text_primary))
+                            .child(title),
+                    )
+                    .child(div().w_full().flex().flex_col().gap(px(6.)).children(rows))
+                    .into_any_element()
+            };
+
+        let empty = self.i18n.text("ai.hub.section.list.empty");
+
+        let pane_content = match self.ai_hub_active_pane {
+            AiHubPane::Chat => center_panel.into_any_element(),
+            AiHubPane::Agents => div()
+                .id("ai_hub.pane.agents.scroll")
+                .w_full()
+                .h_full()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(build_list_section(
+                    "ai_hub.agents.item",
+                    self.i18n.text("ai.hub.section.agents"),
+                    self.ai_runtime_agents.clone(),
+                    ui_theme,
+                    empty.clone(),
+                ))
+                .child(build_list_section(
+                    "ai_hub.clusters.item",
+                    self.i18n.text("ai.hub.section.clusters"),
+                    self.ai_runtime_clusters.clone(),
+                    ui_theme,
+                    empty.clone(),
+                ))
+                .into_any_element(),
+            AiHubPane::Tools => {
+                let mut lines = self.ai_runtime_plugins.clone();
+                if lines.is_empty() {
+                    lines.push(self.i18n.text("ai.hub.section.list.empty"));
+                }
+                if self.app_settings.ai.vcp_tool_injection {
+                    lines.insert(0, self.i18n.text("ai.hub.meta.tool_injection.on"));
+                } else {
+                    lines.insert(0, self.i18n.text("ai.hub.meta.tool_injection.off"));
+                }
+                div()
+                    .id("ai_hub.pane.tools.scroll")
+                    .w_full()
+                    .h_full()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(build_list_section(
+                        "ai_hub.tools.item",
+                        self.i18n.text("ai.hub.section.plugins"),
+                        lines,
+                        ui_theme,
+                        empty.clone(),
+                    ))
+                    .into_any_element()
+            }
+            AiHubPane::Memory => div()
+                .id("ai_hub.pane.memory.scroll")
+                .w_full()
+                .h_full()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(build_list_section(
+                    "ai_hub.memory.tags",
+                    self.i18n.text("ai.hub.section.rag_tags"),
+                    self.ai_runtime_rag_tags.clone(),
+                    ui_theme,
+                    empty.clone(),
+                ))
+                .child(build_list_section(
+                    "ai_hub.memory.config",
+                    self.i18n.text("ai.hub.section.config"),
+                    self
+                        .ai_runtime_config_items
+                        .iter()
+                        .map(|item| format!("{}: {}", item.title, item.detail))
+                        .collect(),
+                    ui_theme,
+                    empty.clone(),
+                ))
+                .into_any_element(),
+            AiHubPane::Tasks => div()
+                .id("ai_hub.pane.tasks.scroll")
+                .w_full()
+                .h_full()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(build_list_section(
+                    "ai_hub.tasks.item",
+                    self.i18n.text("ai.hub.section.schedules"),
+                    self.ai_runtime_schedules.clone(),
+                    ui_theme,
+                    empty.clone(),
+                ))
+                .into_any_element(),
+            AiHubPane::Nodes => {
+                let mut metrics = self
+                    .ai_runtime_metrics
+                    .iter()
+                    .map(|item| format!("{}: {}", item.title, item.detail))
+                    .collect::<Vec<_>>();
+                metrics.insert(
+                    0,
+                    format!(
+                        "{}: {}",
+                        self.i18n.text("ai.hub.meta.ws_endpoint"),
+                        infer_vcp_ws_endpoint(self.app_settings.ai.vcp_admin_url.as_str())
+                    ),
+                );
+                metrics.insert(
+                    1,
+                    format!(
+                        "{}: {}ms",
+                        self.i18n.text("ai.hub.meta.timeout"),
+                        self.app_settings.ai.vcp_request_timeout_ms.max(200)
+                    ),
+                );
+
+                div()
+                    .id("ai_hub.pane.nodes.scroll")
+                    .w_full()
+                    .h_full()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(build_list_section(
+                        "ai_hub.nodes.metrics",
+                        self.i18n.text("ai.hub.section.metrics"),
+                        metrics,
+                        ui_theme,
+                        empty.clone(),
+                    ))
+                    .child(build_list_section(
+                        "ai_hub.nodes.warnings",
+                        self.i18n.text("ai.hub.section.warnings"),
+                        self.ai_runtime_warnings.clone(),
+                        ui_theme,
+                        empty,
+                    ))
+                    .into_any_element()
+            }
+        };
+
+        let main_panel = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .p(px(12.))
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(top_meta)
+            .child(
+                div()
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .bg(rgb(ui_theme.surface_bg))
+                    .border_1()
+                    .border_color(rgb(ui_theme.border))
+                    .overflow_hidden()
+                    .child(pane_content),
+            );
+
         div()
             .id("ai_hub.main")
             .flex_1()
@@ -7472,7 +8289,8 @@ impl XnoteWindow {
             .min_h_0()
             .h_full()
             .flex()
-            .child(center_panel)
+            .child(pane_sidebar)
+            .child(main_panel)
     }
 
     fn link_picker_overlay(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -8393,11 +9211,18 @@ impl XnoteWindow {
             } else {
                 self.app_settings.ai.vcp_url.trim().to_string()
             };
+            let admin_endpoint_label = if self.app_settings.ai.vcp_admin_url.trim().is_empty() {
+                infer_admin_endpoint_from_chat_url(endpoint_label.as_str())
+            } else {
+                self.app_settings.ai.vcp_admin_url.trim().to_string()
+            };
             let model_label = if self.app_settings.ai.vcp_model.trim().is_empty() {
                 DEFAULT_AI_VCP_MODEL.to_string()
             } else {
                 self.app_settings.ai.vcp_model.trim().to_string()
             };
+            let ws_endpoint_label = infer_vcp_ws_endpoint(admin_endpoint_label.as_str());
+            let timeout_label = self.app_settings.ai.vcp_request_timeout_ms.max(200).to_string();
 
             let endpoint_candidates = vec![
                 "http://127.0.0.1:6005".to_string(),
@@ -8774,7 +9599,7 @@ impl XnoteWindow {
                     };
                     this.status = SharedString::from(format!(
                         "{} {}",
-                        this.i18n.text("settings.ai.status.endpoint_ready"),
+                        this.i18n.text("settings.ai.status.endpoint_checking"),
                         endpoint
                     ));
                     this.run_ai_endpoint_check(cx);
@@ -8821,6 +9646,7 @@ impl XnoteWindow {
                                 return;
                             }
                             let endpoint = this.set_ai_endpoint_value("http://127.0.0.1:6005");
+                            this.set_ai_admin_endpoint_value(endpoint.as_str());
                             this.status = SharedString::from(format!(
                                 "{} {}",
                                 this.i18n.text("settings.ai.status.endpoint_set"),
@@ -8864,6 +9690,7 @@ impl XnoteWindow {
                                 return;
                             }
                             let endpoint = this.set_ai_endpoint_value("http://127.0.0.1:5890");
+                            this.set_ai_admin_endpoint_value(endpoint.as_str());
                             this.status = SharedString::from(format!(
                                 "{} {}",
                                 this.i18n.text("settings.ai.status.endpoint_set"),
@@ -9102,6 +9929,318 @@ impl XnoteWindow {
                 None
             };
 
+            let admin_endpoint_edit_row = if matches!(
+                self.ai_settings_editing_field,
+                Some(AiSettingsEditField::AdminEndpoint)
+            ) {
+                self.ai_settings_editing_field.map(|_| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(760.))
+                                .text_color(rgb(ui_theme.text_muted))
+                                .child(self.i18n.text("settings.ai.edit.target.admin_endpoint")),
+                        )
+                        .child(
+                            div()
+                                .h(px(34.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.accent_soft))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(edit_buffer_color))
+                                        .child(if self.ai_settings_edit_buffer.trim().is_empty() {
+                                            self.i18n.text("settings.ai.edit.placeholder")
+                                        } else {
+                                            self.ai_settings_edit_buffer.clone()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.timeout.cancel")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.cancel_ai_settings_edit();
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.cancel_edit")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.timeout.save")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.accent_soft))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.accent))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.commit_ai_settings_edit(cx);
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(800.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.save_edit")),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
+                })
+            } else {
+                None
+            };
+
+            let admin_auth_edit_row = if matches!(
+                self.ai_settings_editing_field,
+                Some(AiSettingsEditField::AdminAuth)
+            ) {
+                self.ai_settings_editing_field.map(|_| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(760.))
+                                .text_color(rgb(ui_theme.text_muted))
+                                .child(self.i18n.text("settings.ai.edit.target.admin_auth")),
+                        )
+                        .child(
+                            div()
+                                .h(px(34.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.accent_soft))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(edit_buffer_color))
+                                        .child(if self.ai_settings_edit_buffer.trim().is_empty() {
+                                            self.i18n.text("settings.ai.edit.placeholder")
+                                        } else {
+                                            self.ai_settings_edit_buffer.clone()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.admin_endpoint.cancel")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.cancel_ai_settings_edit();
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.cancel_edit")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.admin_endpoint.save")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.accent_soft))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.accent))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.commit_ai_settings_edit(cx);
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(800.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.save_edit")),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
+                })
+            } else {
+                None
+            };
+
+            let timeout_edit_row = if matches!(
+                self.ai_settings_editing_field,
+                Some(AiSettingsEditField::TimeoutMs)
+            ) {
+                self.ai_settings_editing_field.map(|_| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_family("IBM Plex Mono")
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(760.))
+                                .text_color(rgb(ui_theme.text_muted))
+                                .child(self.i18n.text("settings.ai.edit.target.timeout")),
+                        )
+                        .child(
+                            div()
+                                .h(px(34.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.accent_soft))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(edit_buffer_color))
+                                        .child(if self.ai_settings_edit_buffer.trim().is_empty() {
+                                            self.i18n.text("settings.ai.edit.placeholder")
+                                        } else {
+                                            self.ai_settings_edit_buffer.clone()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.admin_auth.cancel")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.cancel_ai_settings_edit();
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.cancel_edit")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.edit.admin_auth.save")
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.accent_soft))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.accent))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.commit_ai_settings_edit(cx);
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(800.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.button.save_edit")),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
+                })
+            } else {
+                None
+            };
+
             let model_edit_row = if matches!(self.ai_settings_editing_field, Some(AiSettingsEditField::Model)) {
                 self.ai_settings_editing_field.map(|_| {
                     div()
@@ -9254,6 +10393,9 @@ impl XnoteWindow {
                 AiEndpointCheckCategory::Checking => {
                     self.i18n.text("settings.ai.connection.state.checking")
                 }
+                AiEndpointCheckCategory::PartiallyConnected => {
+                    self.i18n.text("settings.ai.connection.state.partial")
+                }
                 AiEndpointCheckCategory::Connected => {
                     self.i18n.text("settings.ai.connection.state.connected")
                 }
@@ -9290,6 +10432,9 @@ impl XnoteWindow {
                 AiEndpointCheckCategory::Checking => {
                     self.i18n.text("settings.ai.connection.hint.checking")
                 }
+                AiEndpointCheckCategory::PartiallyConnected => {
+                    self.i18n.text("settings.ai.connection.hint.partial")
+                }
                 AiEndpointCheckCategory::Connected => {
                     self.i18n.text("settings.ai.connection.hint.connected")
                 }
@@ -9321,6 +10466,11 @@ impl XnoteWindow {
 
             let (connection_message_color, connection_badge_bg, connection_badge_border) =
                 match self.ai_endpoint_check_category {
+                    AiEndpointCheckCategory::PartiallyConnected => (
+                        ui_theme.diagnostic_warning,
+                        ui_theme.surface_alt_bg,
+                        ui_theme.diagnostic_warning,
+                    ),
                     AiEndpointCheckCategory::Connected => (
                         ui_theme.text_secondary,
                         ui_theme.surface_alt_bg,
@@ -9470,6 +10620,268 @@ impl XnoteWindow {
                         )
                         .into_any_element(),
                 ))
+                .child(card(
+                    self.i18n.text("settings.ai.card.runtime.title"),
+                    self.i18n.text("settings.ai.card.runtime.desc"),
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .h(px(30.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_alt_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.border))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(760.))
+                                        .text_color(rgb(ui_theme.text_muted))
+                                        .child(self.i18n.text("settings.ai.runtime.admin_endpoint")),
+                                )
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(ui_theme.text_primary))
+                                        .child(admin_endpoint_label.clone()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .h(px(30.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_alt_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.border))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(760.))
+                                        .text_color(rgb(ui_theme.text_muted))
+                                        .child(self.i18n.text("settings.ai.runtime.ws_endpoint")),
+                                )
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(ui_theme.text_primary))
+                                        .child(ws_endpoint_label.clone()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .h(px(30.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_alt_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.border))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(760.))
+                                        .text_color(rgb(ui_theme.text_muted))
+                                        .child(self.i18n.text("settings.ai.runtime.timeout")),
+                                )
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgb(ui_theme.text_primary))
+                                        .child(format!("{}ms", timeout_label)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .h(px(30.))
+                                .px(px(10.))
+                                .bg(rgb(ui_theme.surface_alt_bg))
+                                .border_1()
+                                .border_color(rgb(ui_theme.border))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .font_family("IBM Plex Mono")
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(760.))
+                                        .text_color(rgb(ui_theme.text_muted))
+                                        .child(self.i18n.text("settings.ai.runtime.sync_ws")),
+                                )
+                                .child(
+                                    div()
+                                        .font_family("Inter")
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(760.))
+                                        .text_color(rgb(ui_theme.text_primary))
+                                        .child(if self.app_settings.ai.vcp_sync_ws {
+                                            self.i18n.text("settings.ai.runtime.sync_ws.on")
+                                        } else {
+                                            self.i18n.text("settings.ai.runtime.sync_ws.off")
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("settings.ai.runtime.edit_admin_endpoint")
+                                        .h(px(30.))
+                                        .flex_1()
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.start_ai_settings_edit(AiSettingsEditField::AdminEndpoint);
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.runtime.edit_admin_endpoint")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.runtime.edit_admin_auth")
+                                        .h(px(30.))
+                                        .flex_1()
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.start_ai_settings_edit(AiSettingsEditField::AdminAuth);
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.runtime.edit_admin_auth")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings.ai.runtime.edit_timeout")
+                                        .h(px(30.))
+                                        .flex_1()
+                                        .px(px(10.))
+                                        .bg(rgb(ui_theme.surface_alt_bg))
+                                        .border_1()
+                                        .border_color(rgb(ui_theme.border))
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                            this.start_ai_settings_edit(AiSettingsEditField::TimeoutMs);
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .font_family("Inter")
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(760.))
+                                                .text_color(rgb(ui_theme.text_primary))
+                                                .child(self.i18n.text("settings.ai.runtime.edit_timeout")),
+                                        ),
+                                )
+                                .into_any_element(),
+                        )
+                        .child(
+                            div()
+                                .id("settings.ai.runtime.toggle_sync_ws")
+                                .h(px(30.))
+                                .px(px(10.))
+                                .bg(if self.app_settings.ai.vcp_sync_ws {
+                                    rgb(ui_theme.accent_soft)
+                                } else {
+                                    rgb(ui_theme.surface_alt_bg)
+                                })
+                                .border_1()
+                                .border_color(rgb(ui_theme.border))
+                                .cursor_pointer()
+                                .hover(|this| this.bg(rgb(ui_theme.accent_soft)))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                    let next = !this.app_settings.ai.vcp_sync_ws;
+                                    this.set_ai_sync_ws_value(next);
+                                    this.status = SharedString::from(if next {
+                                        this.i18n.text("settings.ai.status.sync_ws_enabled")
+                                    } else {
+                                        this.i18n.text("settings.ai.status.sync_ws_disabled")
+                                    });
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .font_family("Inter")
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(760.))
+                                        .text_color(rgb(ui_theme.text_primary))
+                                        .child(self.i18n.text("settings.ai.runtime.toggle_sync_ws")),
+                                ),
+                        )
+                        .into_any_element(),
+                ))
+                .when(
+                    matches!(
+                        self.ai_settings_editing_field,
+                        Some(AiSettingsEditField::AdminEndpoint)
+                    ),
+                    |this| this.children(admin_endpoint_edit_row),
+                )
+                .when(
+                    matches!(self.ai_settings_editing_field, Some(AiSettingsEditField::AdminAuth)),
+                    |this| this.children(admin_auth_edit_row),
+                )
+                .when(
+                    matches!(self.ai_settings_editing_field, Some(AiSettingsEditField::TimeoutMs)),
+                    |this| this.children(timeout_edit_row),
+                )
                 .child(card(
                     self.i18n.text("settings.ai.card.actions.title"),
                     self.i18n.text("settings.ai.card.actions.desc"),
@@ -11443,7 +12855,20 @@ impl XnoteWindow {
                     if ctrl {
                         if key.as_str() == "v" {
                             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                                self.ai_settings_edit_buffer.push_str(text.as_str());
+                                if matches!(
+                                    self.ai_settings_editing_field,
+                                    Some(AiSettingsEditField::TimeoutMs)
+                                ) {
+                                    let digits = text
+                                        .chars()
+                                        .filter(|ch| ch.is_ascii_digit())
+                                        .collect::<String>();
+                                    if !digits.is_empty() {
+                                        self.ai_settings_edit_buffer.push_str(digits.as_str());
+                                    }
+                                } else {
+                                    self.ai_settings_edit_buffer.push_str(text.as_str());
+                                }
                                 cx.notify();
                             }
                         }
@@ -11454,8 +12879,18 @@ impl XnoteWindow {
                         return true;
                     };
                     if !text.is_empty() {
-                        self.ai_settings_edit_buffer.push_str(text.as_str());
-                        cx.notify();
+                        if matches!(
+                            self.ai_settings_editing_field,
+                            Some(AiSettingsEditField::TimeoutMs)
+                        ) {
+                            if text.chars().all(|ch| ch.is_ascii_digit()) {
+                                self.ai_settings_edit_buffer.push_str(text.as_str());
+                                cx.notify();
+                            }
+                        } else {
+                            self.ai_settings_edit_buffer.push_str(text.as_str());
+                            cx.notify();
+                        }
                     }
                     return true;
                 }
@@ -14493,7 +15928,7 @@ impl Render for XnoteWindow {
         self.schedule_non_active_group_preview_loads(cx);
 
         if self.active_module == WorkstationModule::AiHub && self.ai_hub_input_needs_focus {
-            if self.ai_hub_chat_enabled() {
+            if self.ai_hub_chat_enabled() && self.ai_hub_active_pane == AiHubPane::Chat {
                 window.focus(&self.ai_hub_input_focus_handle);
             }
             self.ai_hub_input_needs_focus = false;
@@ -18752,203 +20187,42 @@ fn build_clock_label(_epoch_secs: u64) -> String {
     dt.format("%H:%M").to_string()
 }
 
-#[derive(Debug)]
-struct VcpEndpointProbeReport {
-    category: AiEndpointCheckCategory,
-    detail: String,
-    models: Vec<String>,
-}
-
-fn probe_vcp_endpoint(endpoint: &str, api_key: Option<&str>) -> VcpEndpointProbeReport {
-    let endpoint_trimmed = endpoint.trim().to_string();
-    let host_port = match parse_host_port_from_endpoint(endpoint_trimmed.as_str()) {
-        Ok(host_port) => host_port,
-        Err(err) => {
-            return VcpEndpointProbeReport {
-                category: AiEndpointCheckCategory::InvalidEndpoint,
-                detail: format!("{} ({err})", endpoint_trimmed),
-                models: Vec::new(),
-            }
-        }
-    };
-
-    let mut addrs = match host_port.to_socket_addrs() {
-        Ok(addrs) => addrs,
-        Err(err) => {
-            return VcpEndpointProbeReport {
-                category: AiEndpointCheckCategory::InvalidEndpoint,
-                detail: format!("{} ({err})", endpoint_trimmed),
-                models: Vec::new(),
-            }
-        }
-    };
-    let Some(addr) = addrs.next() else {
-        return VcpEndpointProbeReport {
-            category: AiEndpointCheckCategory::InvalidEndpoint,
-            detail: format!("{} (endpoint resolved no address)", endpoint_trimmed),
-            models: Vec::new(),
-        };
-    };
-
-    if let Err(err) = TcpStream::connect_timeout(&addr, AI_ENDPOINT_CHECK_TIMEOUT) {
-        let category = if err.kind() == ErrorKind::TimedOut {
-            AiEndpointCheckCategory::Timeout
-        } else {
-            AiEndpointCheckCategory::NetworkError
-        };
-        return VcpEndpointProbeReport {
-            category,
-            detail: format!("{} ({err})", endpoint_trimmed),
-            models: Vec::new(),
-        };
-    }
-
-    let models_endpoint = match build_vcp_models_endpoint(endpoint_trimmed.as_str()) {
-        Ok(url) => url,
-        Err(err) => {
-            return VcpEndpointProbeReport {
-                category: AiEndpointCheckCategory::InvalidEndpoint,
-                detail: format!("{} ({err})", endpoint_trimmed),
-                models: Vec::new(),
-            }
-        }
-    };
-
-    let mut request = ureq::get(models_endpoint.as_str())
-        .timeout(AI_ENDPOINT_CHECK_TIMEOUT)
-        .set("Accept", "application/json");
-
-    if let Some(key) = api_key.map(str::trim).filter(|value| !value.is_empty()) {
-        request = request.set("Authorization", format!("Bearer {key}").as_str());
-    }
-
-    match request.call() {
-        Ok(resp) => VcpEndpointProbeReport {
-            category: classify_http_status_to_probe_category(resp.status()),
-            detail: format!("{} | /v1/models -> HTTP {}", endpoint_trimmed, resp.status()),
-            models: parse_vcp_models_from_json_body(resp.into_string().ok()),
-        },
-        Err(ureq::Error::Status(code, _resp)) => {
-            let category = classify_http_status_to_probe_category(code);
-            VcpEndpointProbeReport {
-                category,
-                detail: format!("{} | /v1/models -> HTTP {}", endpoint_trimmed, code),
-                models: Vec::new(),
-            }
-        }
-        Err(ureq::Error::Transport(err)) => {
-            let text = err.to_string().to_lowercase();
-            let category = if text.contains("timed out") {
-                AiEndpointCheckCategory::Timeout
-            } else if text.contains("dns") || text.contains("resolve") || text.contains("name") {
-                AiEndpointCheckCategory::InvalidEndpoint
-            } else {
-                AiEndpointCheckCategory::NetworkError
-            };
-            VcpEndpointProbeReport {
-                category,
-                detail: format!("{} (api probe failed: {err})", endpoint_trimmed),
-                models: Vec::new(),
-            }
-        }
+fn ai_category_from_vcp_health(category: VcpHealthCategory) -> AiEndpointCheckCategory {
+    match category {
+        VcpHealthCategory::Connected => AiEndpointCheckCategory::Connected,
+        VcpHealthCategory::Unauthorized => AiEndpointCheckCategory::Unauthorized,
+        VcpHealthCategory::ApiPathNotFound => AiEndpointCheckCategory::ApiPathNotFound,
+        VcpHealthCategory::Timeout => AiEndpointCheckCategory::Timeout,
+        VcpHealthCategory::InvalidEndpoint => AiEndpointCheckCategory::InvalidEndpoint,
+        VcpHealthCategory::NetworkError => AiEndpointCheckCategory::NetworkError,
+        VcpHealthCategory::ServerError => AiEndpointCheckCategory::ServerError,
+        VcpHealthCategory::ClientError => AiEndpointCheckCategory::ClientError,
+        VcpHealthCategory::UnknownError => AiEndpointCheckCategory::UnknownError,
     }
 }
 
-fn parse_vcp_models_from_json_body(body: Option<String>) -> Vec<String> {
-    let Some(body) = body else {
-        return Vec::new();
-    };
-    if body.trim().is_empty() {
-        return Vec::new();
-    }
-
-    let parsed: serde_json::Value = match serde_json::from_str(body.as_str()) {
-        Ok(value) => value,
-        Err(_) => return Vec::new(),
-    };
-
-    let Some(items) = parsed.get("data").and_then(|value| value.as_array()) else {
-        return Vec::new();
-    };
-
-    let mut models = Vec::new();
-    for item in items {
-        if let Some(id) = item.get("id").and_then(|value| value.as_str()) {
-            let id = id.trim();
-            if !id.is_empty() {
-                models.push(id.to_string());
-            }
-        }
-    }
-    models.sort();
-    models.dedup();
-    models
-}
-
-fn build_vcp_models_endpoint(endpoint: &str) -> std::io::Result<String> {
-    let trimmed = endpoint.trim();
+fn infer_admin_endpoint_from_chat_url(chat_url: &str) -> String {
+    let trimmed = chat_url.trim();
     if trimmed.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "empty endpoint",
-        ));
+        return "http://127.0.0.1:6005".to_string();
     }
 
-    if trimmed.contains("/v1/chat/completions") {
-        return Ok(trimmed.replace("/v1/chat/completions", "/v1/models"));
-    }
-    if trimmed.contains("/v1/chatvcp/completions") {
-        return Ok(trimmed.replace("/v1/chatvcp/completions", "/v1/models"));
-    }
-    if trimmed.contains("/v1/models") {
-        return Ok(trimmed.to_string());
+    let mut normalized = trimmed.to_string();
+    if !(normalized.starts_with("http://") || normalized.starts_with("https://")) {
+        normalized = format!("http://{normalized}");
     }
 
-    let base = trimmed.trim_end_matches('/');
-    Ok(format!("{base}/v1/models"))
-}
-
-fn parse_host_port_from_endpoint(endpoint: &str) -> std::io::Result<String> {
-    let trimmed = endpoint.trim();
-    if trimmed.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "empty endpoint",
-        ));
+    for suffix in [
+        "/v1/chat/completions",
+        "/v1/chatvcp/completions",
+        "/v1/models",
+    ] {
+        if normalized.contains(suffix) {
+            normalized = normalized.replace(suffix, "");
+        }
     }
 
-    let without_scheme = trimmed
-        .strip_prefix("http://")
-        .or_else(|| trimmed.strip_prefix("https://"))
-        .unwrap_or(trimmed);
-    let host_and_path = without_scheme
-        .split('/')
-        .next()
-        .unwrap_or(without_scheme)
-        .trim();
-    if host_and_path.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "invalid endpoint host",
-        ));
-    }
-
-    if host_and_path.contains(':') {
-        return Ok(host_and_path.to_string());
-    }
-
-    Ok(format!("{host_and_path}:80"))
-}
-
-fn classify_http_status_to_probe_category(code: u16) -> AiEndpointCheckCategory {
-    match code {
-        200..=299 => AiEndpointCheckCategory::Connected,
-        401 | 403 => AiEndpointCheckCategory::Unauthorized,
-        404 => AiEndpointCheckCategory::ApiPathNotFound,
-        500..=599 => AiEndpointCheckCategory::ServerError,
-        400..=499 => AiEndpointCheckCategory::ClientError,
-        _ => AiEndpointCheckCategory::UnknownError,
-    }
+    normalized.trim_end_matches('/').to_string()
 }
 
 fn truncate_message(input: &str, max_chars: usize) -> String {
@@ -19124,48 +20398,6 @@ mod tests {
         assert_eq!(parsed["windows"]["short"]["search"]["misses"], 0);
         assert_eq!(parsed["windows"]["short"]["quick_open"]["hits"], 1);
         assert_eq!(parsed["windows"]["short"]["quick_open"]["misses"], 0);
-    }
-
-    #[test]
-    fn build_vcp_models_endpoint_rewrites_known_paths() {
-        assert_eq!(
-            build_vcp_models_endpoint("http://127.0.0.1:5890/v1/chat/completions")
-                .expect("rewrite chat completions"),
-            "http://127.0.0.1:5890/v1/models"
-        );
-        assert_eq!(
-            build_vcp_models_endpoint("http://127.0.0.1:5890/v1/chatvcp/completions")
-                .expect("rewrite chatvcp completions"),
-            "http://127.0.0.1:5890/v1/models"
-        );
-        assert_eq!(
-            build_vcp_models_endpoint("http://127.0.0.1:5890").expect("append models path"),
-            "http://127.0.0.1:5890/v1/models"
-        );
-    }
-
-    #[test]
-    fn classify_http_status_to_probe_category_maps_diagnostics() {
-        assert_eq!(
-            classify_http_status_to_probe_category(200),
-            AiEndpointCheckCategory::Connected
-        );
-        assert_eq!(
-            classify_http_status_to_probe_category(401),
-            AiEndpointCheckCategory::Unauthorized
-        );
-        assert_eq!(
-            classify_http_status_to_probe_category(404),
-            AiEndpointCheckCategory::ApiPathNotFound
-        );
-        assert_eq!(
-            classify_http_status_to_probe_category(422),
-            AiEndpointCheckCategory::ClientError
-        );
-        assert_eq!(
-            classify_http_status_to_probe_category(503),
-            AiEndpointCheckCategory::ServerError
-        );
     }
 
     #[test]

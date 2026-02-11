@@ -46,6 +46,14 @@ pub struct AiSettings {
     pub vcp_model: String,
     #[serde(default)]
     pub vcp_tool_injection: bool,
+    #[serde(default = "default_ai_vcp_admin_url")]
+    pub vcp_admin_url: String,
+    #[serde(default)]
+    pub vcp_admin_auth: String,
+    #[serde(default = "default_ai_vcp_request_timeout_ms")]
+    pub vcp_request_timeout_ms: u64,
+    #[serde(default = "default_ai_vcp_sync_ws")]
+    pub vcp_sync_ws: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -164,6 +172,10 @@ impl Default for AiSettings {
             vcp_key: String::new(),
             vcp_model: default_ai_vcp_model(),
             vcp_tool_injection: false,
+            vcp_admin_url: default_ai_vcp_admin_url(),
+            vcp_admin_auth: String::new(),
+            vcp_request_timeout_ms: default_ai_vcp_request_timeout_ms(),
+            vcp_sync_ws: default_ai_vcp_sync_ws(),
         }
     }
 }
@@ -314,6 +326,16 @@ impl AppSettings {
             merged.ai.vcp_model = overlay.ai.vcp_model.clone();
         }
         merged.ai.vcp_tool_injection = overlay.ai.vcp_tool_injection;
+        if !overlay.ai.vcp_admin_url.trim().is_empty() {
+            merged.ai.vcp_admin_url = overlay.ai.vcp_admin_url.clone();
+        }
+        if !overlay.ai.vcp_admin_auth.trim().is_empty() {
+            merged.ai.vcp_admin_auth = overlay.ai.vcp_admin_auth.clone();
+        }
+        if overlay.ai.vcp_request_timeout_ms > 0 {
+            merged.ai.vcp_request_timeout_ms = overlay.ai.vcp_request_timeout_ms.max(200);
+        }
+        merged.ai.vcp_sync_ws = overlay.ai.vcp_sync_ws;
         merged.window_layout.merge_overlay(&overlay.window_layout);
         merged
     }
@@ -495,6 +517,18 @@ fn default_ai_vcp_model() -> String {
     "gemini-2.5-flash-preview-05-20".to_string()
 }
 
+fn default_ai_vcp_admin_url() -> String {
+    "http://127.0.0.1:6005".to_string()
+}
+
+const fn default_ai_vcp_request_timeout_ms() -> u64 {
+    2_000
+}
+
+const fn default_ai_vcp_sync_ws() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,6 +575,10 @@ mod tests {
         settings.ai.vcp_key = "test-key".to_string();
         settings.ai.vcp_model = "test-model".to_string();
         settings.ai.vcp_tool_injection = true;
+        settings.ai.vcp_admin_url = "http://127.0.0.1:6005".to_string();
+        settings.ai.vcp_admin_auth = "Basic demo".to_string();
+        settings.ai.vcp_request_timeout_ms = 3_500;
+        settings.ai.vcp_sync_ws = false;
         settings.bookmarked_notes.push("notes/Alpha.md".to_string());
         settings
             .keymap_overrides
@@ -605,6 +643,10 @@ mod tests {
         project.ai.vcp_url = "http://127.0.0.1:5891".to_string();
         project.ai.vcp_model = "project-model".to_string();
         project.ai.vcp_tool_injection = true;
+        project.ai.vcp_admin_url = "http://127.0.0.1:6005".to_string();
+        project.ai.vcp_admin_auth = "Basic project".to_string();
+        project.ai.vcp_request_timeout_ms = 4_000;
+        project.ai.vcp_sync_ws = false;
         project.bookmarked_notes.push("notes/Beta.md".to_string());
         project
             .keymap_overrides
@@ -653,6 +695,10 @@ mod tests {
         assert_eq!(effective.ai.vcp_url, "http://127.0.0.1:5891");
         assert_eq!(effective.ai.vcp_model, "project-model");
         assert!(effective.ai.vcp_tool_injection);
+        assert_eq!(effective.ai.vcp_admin_url, "http://127.0.0.1:6005");
+        assert_eq!(effective.ai.vcp_admin_auth, "Basic project");
+        assert_eq!(effective.ai.vcp_request_timeout_ms, 4_000);
+        assert!(!effective.ai.vcp_sync_ws);
         assert!(effective
             .bookmarked_notes
             .iter()

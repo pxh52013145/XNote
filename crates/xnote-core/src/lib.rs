@@ -10,5 +10,6 @@ pub mod plugin;
 pub mod plugin_protocol;
 pub mod plugin_transport;
 pub mod settings;
+pub mod vcp;
 pub mod vault;
 pub mod watch;
