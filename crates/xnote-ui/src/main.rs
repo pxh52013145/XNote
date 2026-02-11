@@ -10,6 +10,7 @@ use gpui::{
     Transformation, UTF16Selection, UnderlineStyle, Window, WindowBounds, WindowControlArea,
     WindowOptions,
 };
+use chrono::Local;
 use i18n::{I18n, Locale};
 use serde_json::json;
 use std::borrow::Cow;
@@ -18,6 +19,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -118,6 +120,7 @@ const EDITOR_SURFACE_LEFT_PADDING: f32 = 0.0;
 const EDITOR_SURFACE_RIGHT_PADDING: f32 = 18.0;
 const EDITOR_GUTTER_STABLE_DIGITS_MAX_9999: usize = 4;
 const WINDOW_LAYOUT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(320);
+const AI_HUB_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 const WINDOW_DEFAULT_WIDTH_PX: u32 = 1200;
 const WINDOW_DEFAULT_HEIGHT_PX: u32 = 760;
 const WINDOW_MIN_WIDTH_PX: u32 = 820;
@@ -503,13 +506,6 @@ struct AiChatRunResult {
     tool_calls: Vec<VcpToolRequest>,
     rounds_executed: usize,
     stop_reason: Option<AiToolLoopStopReason>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct AiHubAgentItem {
-    name_key: &'static str,
-    meta_key: &'static str,
-    instruction_key: &'static str,
 }
 
 impl WorkstationModule {
@@ -1095,13 +1091,20 @@ struct XnoteWindow {
     pending_ai_rewrite_nonce: u64,
     next_ai_endpoint_check_nonce: u64,
     pending_ai_endpoint_check_nonce: u64,
+    ai_endpoint_check_result: Option<bool>,
+    ai_endpoint_check_message: SharedString,
     ai_chat_input: String,
     ai_hub_cursor_offset: usize,
     ai_hub_cursor_preferred_col: Option<usize>,
     ai_hub_messages: Vec<AiHubMessage>,
     ai_hub_session_title: SharedString,
-    ai_hub_selected_agent_idx: usize,
     ai_hub_input_needs_focus: bool,
+    ai_hub_input_active: bool,
+    ai_hub_caret_visible: bool,
+    ai_hub_caret_blink_epoch: u64,
+    ai_hub_connection_popup_open: bool,
+    ai_hub_connection_popup_message: SharedString,
+    ai_hub_connection_popup_backdrop_armed_until: Option<Instant>,
     next_note_save_nonce: u64,
     pending_note_save_nonce: u64,
     status: SharedString,
@@ -1324,17 +1327,20 @@ impl XnoteWindow {
             pending_ai_rewrite_nonce: 0,
             next_ai_endpoint_check_nonce: 0,
             pending_ai_endpoint_check_nonce: 0,
+            ai_endpoint_check_result: None,
+            ai_endpoint_check_message: SharedString::from(""),
             ai_chat_input: String::new(),
             ai_hub_cursor_offset: 0,
             ai_hub_cursor_preferred_col: None,
-            ai_hub_messages: vec![AiHubMessage {
-                role: AiHubMessageRole::System,
-                content: SharedString::from(i18n.text("ai.hub.system.ready")),
-                timestamp_label: SharedString::from(i18n.text("ai.hub.timestamp.now")),
-            }],
+            ai_hub_messages: Vec::new(),
             ai_hub_session_title: SharedString::from(i18n.text("ai.hub.session.title")),
-            ai_hub_selected_agent_idx: 0,
             ai_hub_input_needs_focus: false,
+            ai_hub_input_active: false,
+            ai_hub_caret_visible: true,
+            ai_hub_caret_blink_epoch: 0,
+            ai_hub_connection_popup_open: false,
+            ai_hub_connection_popup_message: SharedString::from(""),
+            ai_hub_connection_popup_backdrop_armed_until: None,
             next_note_save_nonce: 0,
             pending_note_save_nonce: 0,
             status: SharedString::from(i18n.text("status.ready")),
@@ -1472,6 +1478,7 @@ impl XnoteWindow {
         }
 
         this.schedule_watch_event_drain(cx);
+        this.schedule_ai_hub_caret_blink(cx);
         this.schedule_cache_diagnostics_flush(cx);
 
         this
@@ -1580,6 +1587,9 @@ impl XnoteWindow {
         self.settings_open = false;
         self.settings_language_menu_open = false;
         self.settings_backdrop_armed_until = None;
+        self.ai_hub_connection_popup_open = false;
+        self.ai_hub_connection_popup_message = SharedString::from("");
+        self.ai_hub_connection_popup_backdrop_armed_until = None;
         self.editor_view_mode = EditorViewMode::Edit;
         self.editor_split_saved_mode = EditorViewMode::Edit;
         self.open_note_word_count = 0;
@@ -2961,7 +2971,11 @@ impl XnoteWindow {
         if module.is_available() {
             self.active_module = module;
             self.status = SharedString::from(format!("Module: {}", module.label()));
-            self.ai_hub_input_needs_focus = module == WorkstationModule::AiHub;
+            if module != WorkstationModule::AiHub {
+                self.ai_hub_set_input_active(false);
+            }
+            self.ai_hub_input_needs_focus =
+                module == WorkstationModule::AiHub && self.ai_hub_chat_enabled();
             self.close_module_switcher(cx);
         } else {
             self.status = SharedString::from(format!(
@@ -4176,22 +4190,34 @@ impl XnoteWindow {
         } else {
             self.app_settings.ai.vcp_url.trim().to_string()
         };
+        let api_key = self.app_settings.ai.vcp_key.trim().to_string();
 
         self.next_ai_endpoint_check_nonce = self.next_ai_endpoint_check_nonce.wrapping_add(1);
         let check_nonce = self.next_ai_endpoint_check_nonce;
         self.pending_ai_endpoint_check_nonce = check_nonce;
 
-        self.status = SharedString::from(self.i18n.text("settings.ai.status.endpoint_checking"));
+        let checking_text = SharedString::from(self.i18n.text("settings.ai.status.endpoint_checking"));
+        self.ai_endpoint_check_result = None;
+        self.ai_endpoint_check_message = checking_text.clone();
+        self.status = checking_text;
         cx.notify();
 
         cx.spawn(
             move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let mut cx = cx.clone();
                 let endpoint_for_check = endpoint.clone();
+                let api_key_for_check = api_key.clone();
                 async move {
                     let result = cx
                         .background_executor()
-                        .spawn(async move { probe_vcp_endpoint(endpoint_for_check.as_str()) })
+                        .spawn(async move {
+                            let key = if api_key_for_check.trim().is_empty() {
+                                None
+                            } else {
+                                Some(api_key_for_check.as_str())
+                            };
+                            probe_vcp_endpoint(endpoint_for_check.as_str(), key)
+                        })
                         .await;
 
                     this.update(&mut cx, |this, cx| {
@@ -4202,19 +4228,25 @@ impl XnoteWindow {
                         this.pending_ai_endpoint_check_nonce = 0;
 
                         match result {
-                            Ok(()) => {
-                                this.status = SharedString::from(format!(
+                            Ok(report) => {
+                                let message = format!(
                                     "{} {}",
                                     this.i18n.text("settings.ai.status.endpoint_ok"),
-                                    endpoint
-                                ));
+                                    report.summary
+                                );
+                                this.ai_endpoint_check_result = Some(true);
+                                this.ai_endpoint_check_message = SharedString::from(message.clone());
+                                this.status = SharedString::from(message);
                             }
                             Err(err) => {
-                                this.status = SharedString::from(format!(
+                                let message = format!(
                                     "{} {} ({err})",
                                     this.i18n.text("settings.ai.status.endpoint_failed"),
                                     endpoint
-                                ));
+                                );
+                                this.ai_endpoint_check_result = Some(false);
+                                this.ai_endpoint_check_message = SharedString::from(message.clone());
+                                this.status = SharedString::from(message);
                             }
                         }
 
@@ -4722,6 +4754,14 @@ impl XnoteWindow {
     }
 
     fn ai_hub_submit_input(&mut self, cx: &mut Context<Self>) {
+        if !self.ai_hub_chat_enabled() {
+            let message = self.ai_hub_connection_block_reason();
+            if !message.trim().is_empty() {
+                self.show_ai_hub_connection_popup(message, cx);
+            }
+            return;
+        }
+
         let prompt = self.ai_chat_input.trim().to_string();
         if prompt.is_empty() {
             self.status = SharedString::from(self.i18n.text("ai.hub.error.input_empty"));
@@ -4985,37 +5025,210 @@ impl XnoteWindow {
         truncate_message(out.trim(), max_chars)
     }
 
-    fn ai_hub_agent_items() -> &'static [AiHubAgentItem; 4] {
-        &[
-            AiHubAgentItem {
-                name_key: "ai.hub.ui.agent.writer.name",
-                meta_key: "ai.hub.ui.agent.writer.meta",
-                instruction_key: "ai.hub.agent.instruction.writer",
-            },
-            AiHubAgentItem {
-                name_key: "ai.hub.ui.agent.researcher.name",
-                meta_key: "ai.hub.ui.agent.researcher.meta",
-                instruction_key: "ai.hub.agent.instruction.researcher",
-            },
-            AiHubAgentItem {
-                name_key: "ai.hub.ui.agent.planner.name",
-                meta_key: "ai.hub.ui.agent.planner.meta",
-                instruction_key: "ai.hub.agent.instruction.planner",
-            },
-            AiHubAgentItem {
-                name_key: "ai.hub.ui.agent.coder.name",
-                meta_key: "ai.hub.ui.agent.coder.meta",
-                instruction_key: "ai.hub.agent.instruction.coder",
-            },
-        ]
+    fn ai_hub_chat_enabled(&self) -> bool {
+        self.ai_endpoint_check_result == Some(true)
     }
 
-    fn selected_ai_hub_agent(&self) -> AiHubAgentItem {
-        let items = Self::ai_hub_agent_items();
-        let idx = self
-            .ai_hub_selected_agent_idx
-            .min(items.len().saturating_sub(1));
-        items[idx]
+    fn ai_hub_connection_block_reason(&self) -> String {
+        match self.ai_endpoint_check_result {
+            Some(true) => String::new(),
+            Some(false) => self.i18n.text("ai.hub.error.vcp_not_connected"),
+            None => self.i18n.text("ai.hub.error.vcp_not_checked"),
+        }
+    }
+
+    fn show_ai_hub_connection_popup(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        let message = message.into();
+        if message.trim().is_empty() {
+            return;
+        }
+        self.ai_hub_input_needs_focus = false;
+        self.ai_hub_set_input_active(false);
+        self.status = SharedString::from(message.clone());
+        self.ai_hub_connection_popup_open = true;
+        self.ai_hub_connection_popup_message = SharedString::from(message);
+        self.ai_hub_connection_popup_backdrop_armed_until =
+            Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
+        cx.notify();
+    }
+
+    fn close_ai_hub_connection_popup(&mut self, cx: &mut Context<Self>) {
+        self.ai_hub_connection_popup_open = false;
+        self.ai_hub_connection_popup_message = SharedString::from("");
+        self.ai_hub_connection_popup_backdrop_armed_until = None;
+        cx.notify();
+    }
+
+    fn ai_hub_connection_popup_overlay(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui_theme = UiTheme::from_settings(self.settings_theme, self.settings_accent);
+        let title = self.i18n.text("ai.hub.popup.connection.title");
+        let open_settings = self.i18n.text("ai.hub.popup.connection.action_settings");
+        let close_label = self.i18n.text("ai.hub.popup.connection.action_close");
+        let message = self.ai_hub_connection_popup_message.clone();
+
+        let popup = div()
+            .w(px(500.))
+            .bg(rgb(ui_theme.surface_alt_bg))
+            .border_1()
+            .border_color(rgb(ui_theme.border))
+            .occlude()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .p_3()
+            .child(
+                div()
+                    .font_family("Inter")
+                    .text_size(px(16.))
+                    .font_weight(FontWeight(820.))
+                    .text_color(rgb(ui_theme.text_primary))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .font_family("Inter")
+                    .text_size(px(13.))
+                    .font_weight(FontWeight(680.))
+                    .text_color(rgb(ui_theme.text_secondary))
+                    .child(message),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .h(px(32.))
+                            .px(px(12.))
+                            .bg(rgb(ui_theme.surface_bg))
+                            .border_1()
+                            .border_color(rgb(ui_theme.border))
+                            .cursor_pointer()
+                            .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                                    this.close_ai_hub_connection_popup(cx);
+                                }),
+                            )
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .font_family("Inter")
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(760.))
+                                    .text_color(rgb(ui_theme.text_primary))
+                                    .child(close_label),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px(32.))
+                            .px(px(12.))
+                            .bg(rgb(ui_theme.accent_soft))
+                            .border_1()
+                            .border_color(rgb(ui_theme.accent))
+                            .cursor_pointer()
+                            .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                                    this.close_ai_hub_connection_popup(cx);
+                                    this.settings_open = true;
+                                    this.settings_section = SettingsSection::Ai;
+                                    this.settings_language_menu_open = false;
+                                    this.settings_backdrop_armed_until =
+                                        Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
+                                    this.module_switcher_open = false;
+                                    this.module_switcher_backdrop_armed_until = None;
+                                    cx.notify();
+                                }),
+                            )
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .font_family("Inter")
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(760.))
+                                    .text_color(rgb(ui_theme.text_primary))
+                                    .child(open_settings),
+                            ),
+                    ),
+            );
+
+        div()
+            .id("ai_hub.connection_popup.overlay")
+            .size_full()
+            .absolute()
+            .top_0()
+            .left_0()
+            .occlude()
+            .child(
+                div()
+                    .id("ai_hub.connection_popup.backdrop")
+                    .size_full()
+                    .bg(rgba(0x0000003c))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        let armed = this
+                            .ai_hub_connection_popup_backdrop_armed_until
+                            .is_none_or(|deadline| Instant::now() >= deadline);
+                        if armed {
+                            this.close_ai_hub_connection_popup(cx);
+                        }
+                    })),
+            )
+            .child(
+                div()
+                    .size_full()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(popup),
+            )
+    }
+
+    fn ai_hub_set_input_active(&mut self, active: bool) {
+        self.ai_hub_input_active = active;
+        self.ai_hub_caret_visible = active;
+        self.ai_hub_caret_blink_epoch = 0;
+    }
+
+    fn schedule_ai_hub_caret_blink(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(|this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            let mut cx = cx.clone();
+            async move {
+                loop {
+                    Timer::after(AI_HUB_CARET_BLINK_INTERVAL).await;
+                    this.update(&mut cx, |this, cx| {
+                        if this.active_module != WorkstationModule::AiHub {
+                            return;
+                        }
+                        if !this.ai_hub_input_active {
+                            this.ai_hub_caret_visible = false;
+                            this.ai_hub_caret_blink_epoch = 0;
+                            return;
+                        }
+                        this.ai_hub_caret_blink_epoch =
+                            this.ai_hub_caret_blink_epoch.wrapping_add(1);
+                        this.ai_hub_caret_visible = !this.ai_hub_caret_visible;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
     }
 
     fn ai_hub_normalize_cursor(&mut self) {
@@ -5154,13 +5367,6 @@ impl XnoteWindow {
     fn build_ai_chat_instruction(&self, user_prompt: &str, context_excerpt: &str) -> String {
         let mut instruction = String::new();
         instruction.push_str(self.i18n.text("ai.hub.chat.instruction.base").as_str());
-        instruction.push_str("\n\n");
-
-        instruction.push_str(
-            self.i18n
-                .text(self.selected_ai_hub_agent().instruction_key)
-                .as_str(),
-        );
         instruction.push_str("\n\n");
 
         if !context_excerpt.trim().is_empty() {
@@ -6709,120 +6915,6 @@ impl XnoteWindow {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let agent_row = |name: SharedString,
-                         meta: SharedString,
-                         active: bool,
-                         row_idx: usize,
-                         cx: &mut Context<Self>| {
-            div()
-                .h(px(58.))
-                .w_full()
-                .px(px(10.))
-                .py(px(8.))
-                .bg(if active {
-                    rgb(ui_theme.accent_soft)
-                } else {
-                    rgb(ui_theme.surface_alt_bg)
-                })
-                .border_1()
-                .border_color(rgb(if active {
-                    ui_theme.accent
-                } else {
-                    ui_theme.border
-                }))
-                .cursor_pointer()
-                .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _ev: &MouseDownEvent, window, cx| {
-                        this.ai_hub_selected_agent_idx = row_idx;
-                        this.ai_hub_input_needs_focus = true;
-                        this.ai_hub_cursor_offset = this.ai_chat_input.len();
-                        this.ai_hub_cursor_preferred_col = None;
-                        window.focus(&this.ai_hub_input_focus_handle);
-                        cx.notify();
-                    }),
-                )
-                .flex()
-                .flex_col()
-                .justify_center()
-                .child(
-                    div()
-                        .font_family("Inter")
-                        .text_size(px(13.))
-                        .font_weight(FontWeight(800.))
-                        .text_color(rgb(ui_theme.text_primary))
-                        .child(name.clone()),
-                )
-                .child(
-                    div()
-                        .font_family("IBM Plex Mono")
-                        .text_size(px(10.))
-                        .font_weight(FontWeight(700.))
-                        .text_color(rgb(ui_theme.text_muted))
-                        .child(meta.clone()),
-                )
-        };
-
-        let agent_panel_title = SharedString::from(self.i18n.text("ai.hub.ui.agent_panel.title"));
-        let agent_panel_subtitle =
-            SharedString::from(self.i18n.text("ai.hub.ui.agent_panel.subtitle"));
-        let agent_items = Self::ai_hub_agent_items();
-
-        let agent_rows = agent_items
-            .into_iter()
-            .enumerate()
-            .map(|(row_idx, item)| {
-                agent_row(
-                    SharedString::from(self.i18n.text(item.name_key)),
-                    SharedString::from(self.i18n.text(item.meta_key)),
-                    self.ai_hub_selected_agent_idx == row_idx,
-                    row_idx,
-                    cx,
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let left_panel = div()
-            .w(px(260.))
-            .min_w(px(260.))
-            .max_w(px(260.))
-            .h_full()
-            .bg(rgb(ui_theme.surface_bg))
-            .border_r_1()
-            .border_color(rgb(ui_theme.border))
-            .p(px(12.))
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(
-                div()
-                    .font_family("Inter")
-                    .text_size(px(20.))
-                    .font_weight(FontWeight(800.))
-                    .text_color(rgb(ui_theme.text_primary))
-                    .child(agent_panel_title),
-            )
-            .child(
-                div()
-                    .font_family("IBM Plex Mono")
-                    .text_size(px(10.))
-                    .font_weight(FontWeight(700.))
-                    .text_color(rgb(ui_theme.text_muted))
-                    .child(agent_panel_subtitle),
-            )
-            .child(div().h(px(1.)).w_full().bg(rgb(ui_theme.border)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .children(agent_rows),
-            );
-
         let role_user = self.i18n.text("ai.hub.ui.role.user");
         let role_assistant = self.i18n.text("ai.hub.ui.role.assistant");
         let role_system = self.i18n.text("ai.hub.ui.role.system");
@@ -6832,30 +6924,44 @@ impl XnoteWindow {
             .iter()
             .enumerate()
             .map(|(ix, message)| {
-                let (bubble_bg, bubble_border, bubble_text, prefix) = match message.role {
+                let is_continuation = ix > 0
+                    && self
+                        .ai_hub_messages
+                        .get(ix.saturating_sub(1))
+                        .is_some_and(|prev| prev.role == message.role);
+
+                let (bubble_bg, bubble_border, bubble_text, prefix, align_right, show_tail) =
+                    match message.role {
                     AiHubMessageRole::User => (
                         ui_theme.accent_soft,
                         ui_theme.accent,
                         ui_theme.text_primary,
                         role_user.clone(),
+                        true,
+                        true,
                     ),
                     AiHubMessageRole::Assistant => (
                         ui_theme.surface_bg,
                         ui_theme.border,
                         ui_theme.text_primary,
                         role_assistant.clone(),
+                        false,
+                        true,
                     ),
                     AiHubMessageRole::System => (
                         ui_theme.surface_alt_bg,
                         ui_theme.border,
                         ui_theme.text_muted,
                         role_system.clone(),
+                        false,
+                        false,
                     ),
                 };
 
-                div()
+                let bubble = div()
                     .id(ElementId::named_usize("ai_hub.message", ix))
-                    .w_full()
+                    .relative()
+                    .max_w(px(860.))
                     .bg(rgb(bubble_bg))
                     .border_1()
                     .border_color(rgb(bubble_border))
@@ -6864,7 +6970,7 @@ impl XnoteWindow {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(
+                    .children((!is_continuation).then(|| {
                         div()
                             .flex()
                             .items_center()
@@ -6884,8 +6990,8 @@ impl XnoteWindow {
                                     .font_weight(FontWeight(700.))
                                     .text_color(rgb(ui_theme.text_muted))
                                     .child(message.timestamp_label.clone()),
-                            ),
-                    )
+                            )
+                    }))
                     .child(
                         div()
                             .font_family("Inter")
@@ -6894,13 +7000,41 @@ impl XnoteWindow {
                             .text_color(rgb(bubble_text))
                             .child(message.content.clone()),
                     )
+                    .children(show_tail.then(|| {
+                        ui_corner_tag(bubble_bg)
+                            .absolute()
+                            .bottom(px(6.))
+                            .when(align_right, |this| this.right(px(-8.)))
+                            .when(!align_right, |this| this.left(px(-8.)))
+                    }));
+
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_end()
+                    .when(!align_right, |this| this.justify_start())
+                    .pt(px(if ix == 0 {
+                        0.
+                    } else if is_continuation {
+                        3.
+                    } else {
+                        10.
+                    }))
+                    .child(bubble)
             })
             .collect::<Vec<_>>();
 
         self.ai_hub_normalize_cursor();
         let input_empty = self.ai_chat_input.is_empty();
         let cursor = self.ai_hub_cursor_offset.min(self.ai_chat_input.len());
-        let ai_input_focused = self.ai_hub_input_focus_handle.is_focused(window);
+        let ai_input_focused = self.ai_hub_input_active && self.ai_hub_input_focus_handle.is_focused(window);
+        if self.ai_hub_input_active && !self.ai_hub_input_focus_handle.is_focused(window) {
+            self.ai_hub_set_input_active(false);
+        }
+        let ai_chat_enabled = self.ai_hub_chat_enabled();
+        let ai_block_message = SharedString::from(self.ai_hub_connection_block_reason());
+        let ai_blocked = !ai_block_message.as_ref().trim().is_empty();
+        let ai_caret_visible = ai_input_focused && self.ai_hub_caret_visible;
 
         let (input_left, input_right) = if input_empty {
             (String::new(), String::new())
@@ -6911,6 +7045,7 @@ impl XnoteWindow {
             )
         };
         let input_placeholder = self.i18n.text("ai.hub.ui.input.placeholder");
+        let input_disabled_placeholder = self.i18n.text("ai.hub.ui.input.disabled_placeholder");
 
         let center_panel = div()
             .flex_1()
@@ -6929,6 +7064,16 @@ impl XnoteWindow {
                     .bg(rgb(ui_theme.surface_bg))
                     .border_1()
                     .border_color(rgb(ui_theme.border))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                            if this.ai_hub_input_active {
+                                this.ai_hub_set_input_active(false);
+                                this.ai_hub_input_needs_focus = false;
+                                cx.notify();
+                            }
+                        }),
+                    )
                     .flex()
                     .items_center()
                     .child(
@@ -6949,10 +7094,20 @@ impl XnoteWindow {
                     .bg(rgb(ui_theme.surface_bg))
                     .border_1()
                     .border_color(rgb(ui_theme.border))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                            if this.ai_hub_input_active {
+                                this.ai_hub_set_input_active(false);
+                                this.ai_hub_input_needs_focus = false;
+                                cx.notify();
+                            }
+                        }),
+                    )
                     .p(px(10.))
                     .flex()
                     .flex_col()
-                    .gap(px(10.))
+                    .gap(px(0.))
                     .children(messages),
             )
             .child(
@@ -6963,25 +7118,41 @@ impl XnoteWindow {
                     .px(px(10.))
                     .bg(rgb(ui_theme.surface_bg))
                     .border_1()
-                    .border_color(rgb(if ai_input_focused {
+                    .border_color(rgb(if ai_input_focused && ai_chat_enabled {
                         ui_theme.accent
                     } else {
                         ui_theme.border
                     }))
+                    .when(!ai_chat_enabled, |this| this.opacity(0.78))
                     .track_focus(&self.ai_hub_input_focus_handle)
                     .focusable()
-                    .cursor_text()
+                    .cursor(if ai_chat_enabled {
+                        CursorStyle::IBeam
+                    } else {
+                        CursorStyle::OperationNotAllowed
+                    })
                     .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
-                        this.ai_hub_input_needs_focus = true;
+                        this.ai_hub_input_needs_focus = this.ai_hub_chat_enabled();
+                        if this.ai_hub_chat_enabled() {
+                            this.ai_hub_set_input_active(true);
+                        }
                         this.on_ai_hub_input_key(ev, cx);
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _ev: &MouseDownEvent, window, cx| {
-                            this.ai_hub_input_needs_focus = true;
-                            this.ai_hub_cursor_offset = this.ai_chat_input.len();
-                            this.ai_hub_cursor_preferred_col = None;
-                            window.focus(&this.ai_hub_input_focus_handle);
+                            if this.ai_hub_chat_enabled() {
+                                this.ai_hub_input_needs_focus = true;
+                                this.ai_hub_set_input_active(true);
+                                this.ai_hub_cursor_offset = this.ai_chat_input.len();
+                                this.ai_hub_cursor_preferred_col = None;
+                                window.focus(&this.ai_hub_input_focus_handle);
+                            } else {
+                                let message = this.ai_hub_connection_block_reason();
+                                if !message.trim().is_empty() {
+                                    this.show_ai_hub_connection_popup(message, cx);
+                                }
+                            }
                             cx.notify();
                         }),
                     )
@@ -7011,8 +7182,18 @@ impl XnoteWindow {
                                         .text_size(px(12.))
                                         .font_weight(FontWeight(650.))
                                         .text_color(rgb(ui_theme.text_subtle))
-                                        .child(div().w(px(1.)).h(px(16.)).bg(rgb(ui_theme.accent)))
-                                        .child(input_placeholder)
+                                        .children(ai_caret_visible.then(|| {
+                                            div().w(px(1.)).h(px(16.)).bg(rgb(if ai_chat_enabled {
+                                                ui_theme.accent
+                                            } else {
+                                                ui_theme.text_subtle
+                                            }))
+                                        }))
+                                        .child(if ai_chat_enabled {
+                                            input_placeholder.clone()
+                                        } else {
+                                            input_disabled_placeholder.clone()
+                                        })
                                         .into_any_element()
                                 } else {
                                     div()
@@ -7021,7 +7202,11 @@ impl XnoteWindow {
                                         .text_size(px(12.))
                                         .font_weight(FontWeight(650.))
                                         .text_color(rgb(ui_theme.text_subtle))
-                                        .child(input_placeholder)
+                                        .child(if ai_chat_enabled {
+                                            input_placeholder.clone()
+                                        } else {
+                                            input_disabled_placeholder.clone()
+                                        })
                                         .into_any_element()
                                 }
                             } else {
@@ -7034,13 +7219,9 @@ impl XnoteWindow {
                                     .font_weight(FontWeight(750.))
                                     .text_color(rgb(ui_theme.text_primary))
                                     .child(SharedString::from(input_left))
-                                    .child(div().w(px(1.)).h(px(16.)).bg(rgb(
-                                        if ai_input_focused {
-                                            ui_theme.accent
-                                        } else {
-                                            ui_theme.text_subtle
-                                        },
-                                    )))
+                                    .children(ai_caret_visible.then(|| {
+                                        div().w(px(1.)).h(px(16.)).bg(rgb(ui_theme.accent))
+                                    }))
                                     .child(SharedString::from(input_right))
                                     .into_any_element()
                             }),
@@ -7049,22 +7230,52 @@ impl XnoteWindow {
                         div()
                             .h(px(34.))
                             .w(px(44.))
-                            .bg(rgb(ui_theme.accent_soft))
+                            .bg(rgb(if ai_chat_enabled {
+                                ui_theme.accent_soft
+                            } else {
+                                ui_theme.surface_alt_bg
+                            }))
                             .border_1()
-                            .border_color(rgb(ui_theme.accent))
-                            .cursor_pointer()
-                            .hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                            .border_color(rgb(if ai_chat_enabled {
+                                ui_theme.accent
+                            } else {
+                                ui_theme.border
+                            }))
+                            .cursor(if ai_chat_enabled {
+                                CursorStyle::PointingHand
+                            } else {
+                                CursorStyle::OperationNotAllowed
+                            })
+                            .when(ai_chat_enabled, |this| {
+                                this.hover(|this| this.bg(rgb(ui_theme.interactive_hover)))
+                            })
+                            .when(!ai_chat_enabled, |this| this.opacity(0.72))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
-                                    this.ai_hub_submit_input(cx);
+                                    if this.ai_hub_chat_enabled() {
+                                        this.ai_hub_submit_input(cx);
+                                    } else {
+                                        let message = this.ai_hub_connection_block_reason();
+                                        if !message.trim().is_empty() {
+                                            this.show_ai_hub_connection_popup(message, cx);
+                                        }
+                                    }
                                 }),
                             )
                             .flex()
                             .items_center()
                             .justify_center()
                             .child(ui_icon(ICON_CHEVRON_RIGHT, 14., ui_theme.text_primary)),
-                    ),
+                    )
+                    .children(ai_blocked.then(|| {
+                        div()
+                            .font_family("Inter")
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(650.))
+                            .text_color(rgb(ui_theme.diagnostic_error))
+                            .child(ai_block_message)
+                    })),
             );
 
         div()
@@ -7074,7 +7285,6 @@ impl XnoteWindow {
             .min_h_0()
             .h_full()
             .flex()
-            .child(left_panel)
             .child(center_panel)
     }
 
@@ -8195,6 +8405,37 @@ impl XnoteWindow {
                         .child(self.i18n.text("settings.ai.button.apply_check")),
                 );
 
+            let connection_message = {
+                let raw = self.ai_endpoint_check_message.to_string();
+                if raw.trim().is_empty() {
+                    SharedString::from(self.i18n.text("settings.ai.connection.not_checked"))
+                } else {
+                    SharedString::from(raw)
+                }
+            };
+
+            let connection_message_color = match self.ai_endpoint_check_result {
+                Some(true) => ui_theme.text_secondary,
+                Some(false) => ui_theme.diagnostic_error,
+                None => ui_theme.text_muted,
+            };
+
+            let connection_card_body = div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(apply_btn)
+                .child(
+                    div()
+                        .font_family("Inter")
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(600.))
+                        .line_height(relative(1.3))
+                        .text_color(rgb(connection_message_color))
+                        .child(connection_message),
+                );
+
             div()
                 .w_full()
                 .flex()
@@ -8223,7 +8464,7 @@ impl XnoteWindow {
                 .child(card(
                     self.i18n.text("settings.ai.card.connection.title"),
                     self.i18n.text("settings.ai.card.connection.desc"),
-                    apply_btn.into_any_element(),
+                    connection_card_body.into_any_element(),
                 ))
                 .into_any_element()
         };
@@ -9878,6 +10119,13 @@ impl XnoteWindow {
                 self.settings_language_menu_open = false;
                 self.settings_backdrop_armed_until = None;
                 cx.notify();
+            }
+            return;
+        }
+
+        if self.ai_hub_connection_popup_open {
+            if ev.keystroke.key.eq_ignore_ascii_case("escape") {
+                self.close_ai_hub_connection_popup(cx);
             }
             return;
         }
@@ -11655,6 +11903,17 @@ impl XnoteWindow {
     }
 
     fn on_ai_hub_input_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        if !self.ai_hub_chat_enabled() {
+            let key = ev.keystroke.key.to_lowercase();
+            if key == "enter" || key == "return" {
+                let message = self.ai_hub_connection_block_reason();
+                if !message.trim().is_empty() {
+                    self.show_ai_hub_connection_popup(message, cx);
+                }
+            }
+            return;
+        }
+
         let key = ev.keystroke.key.to_lowercase();
         let ctrl = ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform;
         let shift = ev.keystroke.modifiers.shift;
@@ -11838,6 +12097,13 @@ impl XnoteWindow {
                 self.settings_language_menu_open = false;
                 self.settings_backdrop_armed_until = None;
                 cx.notify();
+            }
+            return;
+        }
+
+        if self.ai_hub_connection_popup_open {
+            if key == "escape" {
+                self.close_ai_hub_connection_popup(cx);
             }
             return;
         }
@@ -13087,7 +13353,9 @@ impl Render for XnoteWindow {
         self.schedule_non_active_group_preview_loads(cx);
 
         if self.active_module == WorkstationModule::AiHub && self.ai_hub_input_needs_focus {
-            window.focus(&self.ai_hub_input_focus_handle);
+            if self.ai_hub_chat_enabled() {
+                window.focus(&self.ai_hub_input_focus_handle);
+            }
             self.ai_hub_input_needs_focus = false;
         }
 
@@ -13210,6 +13478,38 @@ impl Render for XnoteWindow {
                 },
             ));
 
+        let ai_rail_top = div().flex().flex_col().child(rail_button(
+            "rail.ai_hub",
+            ICON_FILE_COG,
+            0x111827,
+            true,
+            |this, cx| {
+                this.active_module = WorkstationModule::AiHub;
+                cx.notify();
+            },
+        ));
+
+        let ai_rail_bottom = div()
+            .flex()
+            .flex_col()
+            .justify_end()
+            .h(px(64.))
+            .child(rail_button(
+                "rail.ai.settings",
+                ICON_SETTINGS,
+                0x6b7280,
+                false,
+                |this, cx| {
+                    this.settings_open = true;
+                    this.settings_language_menu_open = false;
+                    this.settings_backdrop_armed_until =
+                        Some(Instant::now() + OVERLAY_BACKDROP_ARM_DELAY);
+                    this.module_switcher_open = false;
+                    this.module_switcher_backdrop_armed_until = None;
+                    cx.notify();
+                },
+            ));
+
         let rail = div()
             .w(px(48.))
             .min_w(px(48.))
@@ -13224,6 +13524,21 @@ impl Render for XnoteWindow {
             .justify_between()
             .child(rail_top)
             .child(rail_bottom);
+
+        let ai_rail = div()
+            .w(px(48.))
+            .min_w(px(48.))
+            .max_w(px(48.))
+            .flex_shrink_0()
+            .h_full()
+            .bg(rgb(ui_theme.panel_bg))
+            .border_r_1()
+            .border_color(rgb(ui_theme.border))
+            .flex()
+            .flex_col()
+            .justify_between()
+            .child(ai_rail_top)
+            .child(ai_rail_bottom);
 
         let rail_w = px(48.);
         let splitter_w = px(6.);
@@ -16813,10 +17128,13 @@ impl Render for XnoteWindow {
                 )
         };
 
-        let mut main_row = div().flex().flex_1().min_h_0().w_full().child(rail);
+        let mut main_row = div().flex().flex_1().min_h_0().w_full();
         if self.active_module == WorkstationModule::AiHub {
-            main_row = main_row.child(self.render_ai_hub_panel(ui_theme, window, cx));
+            main_row = main_row
+                .child(ai_rail)
+                .child(self.render_ai_hub_panel(ui_theme, window, cx));
         } else {
+            main_row = main_row.child(rail);
             if panel_shell_present {
                 main_row = main_row
                     .child(panel_shell)
@@ -16855,6 +17173,9 @@ impl Render for XnoteWindow {
         }
         if self.link_picker_open {
             root = root.child(self.link_picker_overlay(cx));
+        }
+        if self.ai_hub_connection_popup_open {
+            root = root.child(self.ai_hub_connection_popup_overlay(cx));
         }
         if self.splitter_drag.is_some() {
             root = root.child(
@@ -17296,14 +17617,20 @@ fn current_epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn build_clock_label(epoch_secs: u64) -> String {
-    let total = epoch_secs % 86_400;
-    let hours = total / 3_600;
-    let minutes = (total % 3_600) / 60;
-    format!("{hours:02}:{minutes:02}")
+fn build_clock_label(_epoch_secs: u64) -> String {
+    let dt = Local::now();
+    dt.format("%H:%M").to_string()
 }
 
-fn probe_vcp_endpoint(endpoint: &str) -> std::io::Result<()> {
+#[derive(Debug)]
+struct VcpEndpointProbeReport {
+    summary: String,
+}
+
+fn probe_vcp_endpoint(
+    endpoint: &str,
+    api_key: Option<&str>,
+) -> std::io::Result<VcpEndpointProbeReport> {
     let host_port = parse_host_port_from_endpoint(endpoint)?;
     let mut addrs = host_port.to_socket_addrs()?;
     let Some(addr) = addrs.next() else {
@@ -17312,7 +17639,56 @@ fn probe_vcp_endpoint(endpoint: &str) -> std::io::Result<()> {
             "endpoint resolved no address",
         ));
     };
-    TcpStream::connect_timeout(&addr, AI_ENDPOINT_CHECK_TIMEOUT).map(|_| ())
+    TcpStream::connect_timeout(&addr, AI_ENDPOINT_CHECK_TIMEOUT)?;
+
+    let models_endpoint = build_vcp_models_endpoint(endpoint)?;
+    let mut request = ureq::get(models_endpoint.as_str())
+        .timeout(AI_ENDPOINT_CHECK_TIMEOUT)
+        .set("Accept", "application/json");
+
+    if let Some(key) = api_key.map(str::trim).filter(|value| !value.is_empty()) {
+        request = request.set("Authorization", format!("Bearer {key}").as_str());
+    }
+
+    match request.call() {
+        Ok(resp) => Ok(VcpEndpointProbeReport {
+            summary: format!(
+                "{} | /v1/models -> HTTP {}",
+                endpoint.trim(),
+                resp.status()
+            ),
+        }),
+        Err(ureq::Error::Status(code, _resp)) => Ok(VcpEndpointProbeReport {
+            summary: format!("{} | /v1/models -> HTTP {}", endpoint.trim(), code),
+        }),
+        Err(ureq::Error::Transport(err)) => Err(std::io::Error::new(
+            ErrorKind::ConnectionAborted,
+            format!("api probe failed: {err}"),
+        )),
+    }
+}
+
+fn build_vcp_models_endpoint(endpoint: &str) -> std::io::Result<String> {
+    let trimmed = endpoint.trim();
+    if trimmed.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty endpoint",
+        ));
+    }
+
+    if trimmed.contains("/v1/chat/completions") {
+        return Ok(trimmed.replace("/v1/chat/completions", "/v1/models"));
+    }
+    if trimmed.contains("/v1/chatvcp/completions") {
+        return Ok(trimmed.replace("/v1/chatvcp/completions", "/v1/models"));
+    }
+    if trimmed.contains("/v1/models") {
+        return Ok(trimmed.to_string());
+    }
+
+    let base = trimmed.trim_end_matches('/');
+    Ok(format!("{base}/v1/models"))
 }
 
 fn parse_host_port_from_endpoint(endpoint: &str) -> std::io::Result<String> {
@@ -17520,6 +17896,24 @@ mod tests {
         assert_eq!(parsed["windows"]["short"]["search"]["misses"], 0);
         assert_eq!(parsed["windows"]["short"]["quick_open"]["hits"], 1);
         assert_eq!(parsed["windows"]["short"]["quick_open"]["misses"], 0);
+    }
+
+    #[test]
+    fn build_vcp_models_endpoint_rewrites_known_paths() {
+        assert_eq!(
+            build_vcp_models_endpoint("http://127.0.0.1:5890/v1/chat/completions")
+                .expect("rewrite chat completions"),
+            "http://127.0.0.1:5890/v1/models"
+        );
+        assert_eq!(
+            build_vcp_models_endpoint("http://127.0.0.1:5890/v1/chatvcp/completions")
+                .expect("rewrite chatvcp completions"),
+            "http://127.0.0.1:5890/v1/models"
+        );
+        assert_eq!(
+            build_vcp_models_endpoint("http://127.0.0.1:5890").expect("append models path"),
+            "http://127.0.0.1:5890/v1/models"
+        );
     }
 
     #[test]

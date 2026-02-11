@@ -1,5 +1,5 @@
 {
-  "version": "2.6",
+  "version": "2.7",
   "children": [
     {
       "type": "frame",
@@ -1765,27 +1765,27 @@
           "type": "frame",
           "id": "ehVSI",
           "name": "Top",
-          "fill": "#EEF0F2",
           "width": "fill_container",
           "height": 33,
+          "fill": "#EEF0F2",
           "layout": "vertical",
           "children": [
             {
               "type": "frame",
               "id": "9lDrh",
               "name": "Menu Bar",
-              "fill": "#ECEFF3",
               "width": "fill_container",
               "height": 32,
+              "fill": "#ECEFF3",
               "alignItems": "center",
               "children": [
                 {
                   "type": "frame",
                   "id": "n5K5m",
                   "name": "Menu Left",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "gap": 10,
                   "padding": [
                     0,
@@ -1796,22 +1796,22 @@
                     {
                       "type": "icon_font",
                       "id": "sH89p",
+                      "name": "AppIcon",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "library",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "AppIcon"
+                      "fill": "#6B7280"
                     },
                     {
                       "type": "text",
                       "id": "85JB7",
+                      "name": "ModuleRoot",
                       "fill": "#111827",
                       "content": "Resources.asset",
                       "fontFamily": "IBM Plex Mono",
                       "fontSize": 11,
-                      "fontWeight": "800",
-                      "name": "ModuleRoot"
+                      "fontWeight": "800"
                     }
                   ]
                 },
@@ -1819,9 +1819,9 @@
                   "type": "frame",
                   "id": "3jaeN",
                   "name": "Menu Center",
-                  "fill": "#00000000",
                   "width": 520,
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "justifyContent": "center",
                   "alignItems": "center",
                   "children": [
@@ -1829,9 +1829,9 @@
                       "type": "frame",
                       "id": "fYcRY",
                       "name": "Command",
-                      "fill": "#F5F6F8",
                       "width": 520,
                       "height": 24,
+                      "fill": "#F5F6F8",
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
@@ -1849,41 +1849,41 @@
                           "type": "frame",
                           "id": "3b6uD",
                           "name": "Cmd Row",
-                          "fill": "#00000000",
                           "width": "fill_container",
                           "height": 20,
+                          "fill": "#00000000",
                           "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "icon_font",
                               "id": "lTb6B",
+                              "name": "cmdI",
                               "width": 14,
                               "height": 14,
                               "iconFontName": "search",
                               "iconFontFamily": "lucide",
-                              "fill": "#6B7280",
-                              "name": "cmdI"
+                              "fill": "#6B7280"
                             },
                             {
                               "type": "text",
                               "id": "eaYz3",
+                              "name": "cmdT",
                               "fill": "#6B7280",
                               "content": "Search Assets / Commands (Ctrl+K)",
                               "fontFamily": "IBM Plex Mono",
                               "fontSize": 11,
-                              "fontWeight": "650",
-                              "name": "cmdT"
+                              "fontWeight": "650"
                             }
                           ]
                         },
                         {
                           "type": "rectangle",
                           "id": "QH0qx",
+                          "name": "Underline",
                           "fill": "#C7F9CC",
                           "width": "fill_container",
-                          "height": 2,
-                          "name": "Underline"
+                          "height": 2
                         }
                       ]
                     }
@@ -1893,9 +1893,9 @@
                   "type": "frame",
                   "id": "tqO4n",
                   "name": "Menu Right",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "justifyContent": "end",
                   "alignItems": "center",
                   "children": [
@@ -1903,9 +1903,9 @@
                       "type": "frame",
                       "id": "ZC3iE",
                       "name": "Win / Min",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -1924,9 +1924,9 @@
                       "type": "frame",
                       "id": "zM806",
                       "name": "Win / Max",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -1945,9 +1945,9 @@
                       "type": "frame",
                       "id": "eAwnW",
                       "name": "Win / Close",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -1969,10 +1969,10 @@
             {
               "type": "rectangle",
               "id": "ecqBJ",
+              "name": "Divider",
               "fill": "#C8CDD5",
               "width": "fill_container",
-              "height": 1,
-              "name": "Divider"
+              "height": 1
             }
           ]
         },
@@ -1980,26 +1980,26 @@
           "type": "frame",
           "id": "Sn6hh",
           "name": "Main",
-          "fill": "#F5F6F8",
           "width": "fill_container",
           "height": "fill_container",
+          "fill": "#F5F6F8",
           "children": [
             {
               "type": "frame",
               "id": "BJtVL",
               "name": "Sidebar",
-              "fill": "#EEF0F2",
               "width": 48,
               "height": "fill_container",
+              "fill": "#EEF0F2",
               "layout": "vertical",
               "children": [
                 {
                   "type": "frame",
                   "id": "0YJII",
                   "name": "Rail Top",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "layout": "vertical",
                   "gap": 6,
                   "alignItems": "center",
@@ -2008,38 +2008,38 @@
                       "type": "frame",
                       "id": "VuRc4",
                       "name": "Library Btn",
-                      "fill": "#E1E5EA",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#E1E5EA",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "rectangle",
                           "id": "7zjry",
+                          "name": "Active Bar",
                           "fill": "#C7F9CC",
                           "width": 3,
-                          "height": "fill_container",
-                          "name": "Active Bar"
+                          "height": "fill_container"
                         },
                         {
                           "type": "frame",
                           "id": "ALOM3",
                           "name": "Icon Shell",
-                          "fill": "#00000000",
                           "width": "fill_container",
                           "height": "fill_container",
+                          "fill": "#00000000",
                           "justifyContent": "center",
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "icon_font",
                               "id": "bHnKa",
+                              "name": "Library Icon",
                               "width": 18,
                               "height": 18,
                               "iconFontName": "library",
                               "iconFontFamily": "lucide",
-                              "fill": "#374151",
-                              "name": "Library Icon"
+                              "fill": "#374151"
                             }
                           ]
                         }
@@ -2049,21 +2049,21 @@
                       "type": "frame",
                       "id": "lMucF",
                       "name": "Search Btn",
-                      "fill": "#00000000",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "icon_font",
                           "id": "PiNb8",
+                          "name": "Search Icon",
                           "width": 18,
                           "height": 18,
                           "iconFontName": "search",
                           "iconFontFamily": "lucide",
-                          "fill": "#6B7280",
-                          "name": "Search Icon"
+                          "fill": "#6B7280"
                         }
                       ]
                     },
@@ -2071,21 +2071,21 @@
                       "type": "frame",
                       "id": "PUn4j",
                       "name": "Tags Btn",
-                      "fill": "#00000000",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "icon_font",
                           "id": "uB8h5",
+                          "name": "Tag Icon",
                           "width": 18,
                           "height": 18,
                           "iconFontName": "tag",
                           "iconFontFamily": "lucide",
-                          "fill": "#6B7280",
-                          "name": "Tag Icon"
+                          "fill": "#6B7280"
                         }
                       ]
                     }
@@ -2096,18 +2096,18 @@
             {
               "type": "rectangle",
               "id": "sMXPe",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "znbND",
               "name": "Library Panel",
-              "fill": "#FFFFFF",
               "width": 280,
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -2121,9 +2121,9 @@
                   "type": "frame",
                   "id": "SwzG9",
                   "name": "Header",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": 28,
+                  "fill": "#00000000",
                   "alignItems": "center",
                   "children": [
                     {
@@ -2139,17 +2139,17 @@
                       "type": "frame",
                       "id": "6S70f",
                       "name": "Spacer",
-                      "fill": "#00000000",
                       "width": "fill_container",
-                      "height": "fill_container"
+                      "height": "fill_container",
+                      "fill": "#00000000"
                     },
                     {
                       "type": "frame",
                       "id": "JUefT",
                       "name": "Import",
-                      "fill": "#F5F6F8",
                       "width": 86,
                       "height": 22,
+                      "fill": "#F5F6F8",
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
@@ -2187,30 +2187,30 @@
                 {
                   "type": "text",
                   "id": "HQWHo",
+                  "name": "Types",
                   "fill": "#374151",
                   "content": "All Assets\nText\nImages\nMusic\nVideos\neBooks\n3D Models",
                   "fontFamily": "IBM Plex Mono",
                   "fontSize": 11,
-                  "fontWeight": "650",
-                  "name": "Types"
+                  "fontWeight": "650"
                 }
               ]
             },
             {
               "type": "rectangle",
               "id": "KrLHF",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "QuLV9",
               "name": "Assets Grid",
-              "fill": "#FFFFFF",
               "width": "fill_container",
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -2224,9 +2224,9 @@
                   "type": "frame",
                   "id": "YD6td",
                   "name": "Toolbar",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": 28,
+                  "fill": "#00000000",
                   "alignItems": "center",
                   "children": [
                     {
@@ -2242,9 +2242,9 @@
                       "type": "frame",
                       "id": "RSCfJ",
                       "name": "Spacer",
-                      "fill": "#00000000",
                       "width": "fill_container",
-                      "height": "fill_container"
+                      "height": "fill_container",
+                      "fill": "#00000000"
                     },
                     {
                       "type": "text",
@@ -2261,9 +2261,9 @@
                   "type": "frame",
                   "id": "7Kldd",
                   "name": "Grid",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "layout": "vertical",
                   "gap": 12,
                   "children": [
@@ -2271,9 +2271,9 @@
                       "type": "frame",
                       "id": "6efJK",
                       "name": "Row 1",
-                      "fill": "#00000000",
                       "width": "fill_container",
                       "height": 120,
+                      "fill": "#00000000",
                       "gap": 12,
                       "children": [
                         {
@@ -2310,9 +2310,9 @@
                       "type": "frame",
                       "id": "YGNPe",
                       "name": "Row 2",
-                      "fill": "#00000000",
                       "width": "fill_container",
                       "height": 120,
+                      "fill": "#00000000",
                       "gap": 12,
                       "children": [
                         {
@@ -2352,18 +2352,18 @@
             {
               "type": "rectangle",
               "id": "7MbRX",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "wSkkO",
               "name": "Inspector",
-              "fill": "#FFFFFF",
               "width": 360,
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -2402,9 +2402,9 @@
                   "type": "frame",
                   "id": "htKjf",
                   "name": "Open",
-                  "fill": "#F5F6F8",
                   "width": "fill_container",
                   "height": 28,
+                  "fill": "#F5F6F8",
                   "stroke": {
                     "align": "inside",
                     "thickness": 1,
@@ -2445,9 +2445,9 @@
           "type": "frame",
           "id": "DdJjS",
           "name": "Status Bar",
-          "fill": "#ECEFF3",
           "width": "fill_container",
           "height": 28,
+          "fill": "#ECEFF3",
           "gap": 10,
           "padding": [
             0,
@@ -2459,8 +2459,8 @@
               "type": "frame",
               "id": "kt7Mv",
               "name": "Status Left",
-              "fill": "#00000000",
               "height": "fill_container",
+              "fill": "#00000000",
               "gap": 8,
               "alignItems": "center",
               "children": [
@@ -2468,60 +2468,60 @@
                   "type": "frame",
                   "id": "yCRzL",
                   "name": "Module Switcher",
-                  "fill": "#00000000",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "gap": 6,
                   "alignItems": "center",
                   "children": [
                     {
                       "type": "icon_font",
                       "id": "CT2rr",
+                      "name": "moduleI",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "library",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "moduleI"
+                      "fill": "#6B7280"
                     },
                     {
                       "type": "text",
                       "id": "uzlQ9",
+                      "name": "moduleT",
                       "fill": "#374151",
                       "content": "Resources",
                       "fontFamily": "IBM Plex Mono",
                       "fontSize": 10,
-                      "fontWeight": "800",
-                      "name": "moduleT"
+                      "fontWeight": "800"
                     },
                     {
                       "type": "icon_font",
                       "id": "VePUi",
+                      "name": "moduleChevron",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "chevron-down",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "moduleChevron"
+                      "fill": "#6B7280"
                     }
                   ]
                 },
                 {
                   "type": "rectangle",
                   "id": "MkmYj",
+                  "name": "Sep",
                   "fill": "#C8CDD5",
                   "width": 1,
-                  "height": 14,
-                  "name": "Sep"
+                  "height": 14
                 },
                 {
                   "type": "text",
                   "id": "OfH2H",
+                  "name": "Workspace Selector",
                   "fill": "#374151",
                   "content": "Workspace: demo_workspace",
                   "fontFamily": "IBM Plex Mono",
                   "fontSize": 11,
-                  "fontWeight": "750",
-                  "name": "Workspace Selector"
+                  "fontWeight": "750"
                 }
               ]
             },
@@ -2529,16 +2529,16 @@
               "type": "frame",
               "id": "OnbKw",
               "name": "Status Spacer",
-              "fill": "#00000000",
               "width": "fill_container",
-              "height": "fill_container"
+              "height": "fill_container",
+              "fill": "#00000000"
             },
             {
               "type": "frame",
               "id": "QxXW5",
               "name": "Status Right",
-              "fill": "#00000000",
               "height": "fill_container",
+              "fill": "#00000000",
               "gap": 10,
               "alignItems": "center",
               "children": [
@@ -2554,10 +2554,10 @@
                 {
                   "type": "rectangle",
                   "id": "qZjWz",
+                  "name": "Sep",
                   "fill": "#C8CDD5",
                   "width": 1,
-                  "height": 14,
-                  "name": "Sep"
+                  "height": 14
                 },
                 {
                   "type": "text",
@@ -2589,27 +2589,27 @@
           "type": "frame",
           "id": "NzgaR",
           "name": "Top",
-          "fill": "#EEF0F2",
           "width": "fill_container",
           "height": 33,
+          "fill": "#EEF0F2",
           "layout": "vertical",
           "children": [
             {
               "type": "frame",
               "id": "7W7fG",
               "name": "Menu Bar",
-              "fill": "#ECEFF3",
               "width": "fill_container",
               "height": 32,
+              "fill": "#ECEFF3",
               "alignItems": "center",
               "children": [
                 {
                   "type": "frame",
                   "id": "AdIUa",
                   "name": "Menu Left",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "gap": 10,
                   "padding": [
                     0,
@@ -2620,22 +2620,22 @@
                     {
                       "type": "icon_font",
                       "id": "dBQy2",
+                      "name": "AppIcon",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "inbox",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "AppIcon"
+                      "fill": "#6B7280"
                     },
                     {
                       "type": "text",
                       "id": "0XWeT",
+                      "name": "ModuleRoot",
                       "fill": "#111827",
                       "content": "Inbox.info",
                       "fontFamily": "IBM Plex Mono",
                       "fontSize": 11,
-                      "fontWeight": "800",
-                      "name": "ModuleRoot"
+                      "fontWeight": "800"
                     }
                   ]
                 },
@@ -2643,9 +2643,9 @@
                   "type": "frame",
                   "id": "r5kra",
                   "name": "Menu Center",
-                  "fill": "#00000000",
                   "width": 520,
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "justifyContent": "center",
                   "alignItems": "center",
                   "children": [
@@ -2653,9 +2653,9 @@
                       "type": "frame",
                       "id": "hDlJz",
                       "name": "Command",
-                      "fill": "#F5F6F8",
                       "width": 520,
                       "height": 24,
+                      "fill": "#F5F6F8",
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
@@ -2673,41 +2673,41 @@
                           "type": "frame",
                           "id": "XyfOx",
                           "name": "Cmd Row",
-                          "fill": "#00000000",
                           "width": "fill_container",
                           "height": 20,
+                          "fill": "#00000000",
                           "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "icon_font",
                               "id": "PbIbl",
+                              "name": "cmdI",
                               "width": 14,
                               "height": 14,
                               "iconFontName": "search",
                               "iconFontFamily": "lucide",
-                              "fill": "#6B7280",
-                              "name": "cmdI"
+                              "fill": "#6B7280"
                             },
                             {
                               "type": "text",
                               "id": "Xw0lZ",
+                              "name": "cmdT",
                               "fill": "#6B7280",
                               "content": "Search Inbox / Commands (Ctrl+K)",
                               "fontFamily": "IBM Plex Mono",
                               "fontSize": 11,
-                              "fontWeight": "650",
-                              "name": "cmdT"
+                              "fontWeight": "650"
                             }
                           ]
                         },
                         {
                           "type": "rectangle",
                           "id": "PIdR3",
+                          "name": "Underline",
                           "fill": "#E9D5FF",
                           "width": "fill_container",
-                          "height": 2,
-                          "name": "Underline"
+                          "height": 2
                         }
                       ]
                     }
@@ -2717,9 +2717,9 @@
                   "type": "frame",
                   "id": "WAh8z",
                   "name": "Menu Right",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "justifyContent": "end",
                   "alignItems": "center",
                   "children": [
@@ -2727,9 +2727,9 @@
                       "type": "frame",
                       "id": "k9Hfs",
                       "name": "Win / Min",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -2748,9 +2748,9 @@
                       "type": "frame",
                       "id": "GPrIj",
                       "name": "Win / Max",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -2769,9 +2769,9 @@
                       "type": "frame",
                       "id": "37zQM",
                       "name": "Win / Close",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -2793,10 +2793,10 @@
             {
               "type": "rectangle",
               "id": "0hCID",
+              "name": "Divider",
               "fill": "#C8CDD5",
               "width": "fill_container",
-              "height": 1,
-              "name": "Divider"
+              "height": 1
             }
           ]
         },
@@ -2804,26 +2804,26 @@
           "type": "frame",
           "id": "xQklH",
           "name": "Main",
-          "fill": "#F5F6F8",
           "width": "fill_container",
           "height": "fill_container",
+          "fill": "#F5F6F8",
           "children": [
             {
               "type": "frame",
               "id": "HOGXV",
               "name": "Sidebar",
-              "fill": "#EEF0F2",
               "width": 48,
               "height": "fill_container",
+              "fill": "#EEF0F2",
               "layout": "vertical",
               "children": [
                 {
                   "type": "frame",
                   "id": "dunpz",
                   "name": "Rail Top",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "layout": "vertical",
                   "gap": 6,
                   "alignItems": "center",
@@ -2832,38 +2832,38 @@
                       "type": "frame",
                       "id": "c0Mjc",
                       "name": "Inbox Btn",
-                      "fill": "#E1E5EA",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#E1E5EA",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "rectangle",
                           "id": "kiENV",
+                          "name": "Active Bar",
                           "fill": "#E9D5FF",
                           "width": 3,
-                          "height": "fill_container",
-                          "name": "Active Bar"
+                          "height": "fill_container"
                         },
                         {
                           "type": "frame",
                           "id": "JiBfk",
                           "name": "Icon Shell",
-                          "fill": "#00000000",
                           "width": "fill_container",
                           "height": "fill_container",
+                          "fill": "#00000000",
                           "justifyContent": "center",
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "icon_font",
                               "id": "dhL26",
+                              "name": "Inbox Icon",
                               "width": 18,
                               "height": 18,
                               "iconFontName": "inbox",
                               "iconFontFamily": "lucide",
-                              "fill": "#374151",
-                              "name": "Inbox Icon"
+                              "fill": "#374151"
                             }
                           ]
                         }
@@ -2873,21 +2873,21 @@
                       "type": "frame",
                       "id": "JzHQO",
                       "name": "Capture Btn",
-                      "fill": "#00000000",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "icon_font",
                           "id": "8gbqx",
+                          "name": "Capture Icon",
                           "width": 18,
                           "height": 18,
                           "iconFontName": "plus",
                           "iconFontFamily": "lucide",
-                          "fill": "#6B7280",
-                          "name": "Capture Icon"
+                          "fill": "#6B7280"
                         }
                       ]
                     }
@@ -2898,18 +2898,18 @@
             {
               "type": "rectangle",
               "id": "J6dp8",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "Chc0q",
               "name": "Timeline",
-              "fill": "#FFFFFF",
               "width": 420,
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -2923,9 +2923,9 @@
                   "type": "frame",
                   "id": "HXYD5",
                   "name": "Header",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": 28,
+                  "fill": "#00000000",
                   "alignItems": "center",
                   "children": [
                     {
@@ -2941,9 +2941,9 @@
                       "type": "frame",
                       "id": "85IAG",
                       "name": "Spacer",
-                      "fill": "#00000000",
                       "width": "fill_container",
-                      "height": "fill_container"
+                      "height": "fill_container",
+                      "fill": "#00000000"
                     },
                     {
                       "type": "text",
@@ -2959,30 +2959,30 @@
                 {
                   "type": "text",
                   "id": "M7UmI",
+                  "name": "Entries",
                   "fill": "#374151",
                   "content": "13:18  Screenshot ? \"Eagle library\" UI\n12:40  Web clip ? MCP notes\n10:05  Voice memo ? project ideas\n09:12  Text ? meeting summary",
                   "fontFamily": "IBM Plex Mono",
                   "fontSize": 11,
-                  "fontWeight": "650",
-                  "name": "Entries"
+                  "fontWeight": "650"
                 }
               ]
             },
             {
               "type": "rectangle",
               "id": "XyjOo",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "ksp2U",
               "name": "Entry Detail",
-              "fill": "#FFFFFF",
               "width": "fill_container",
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -3015,18 +3015,18 @@
             {
               "type": "rectangle",
               "id": "ivlgz",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "H9n4z",
               "name": "Actions",
-              "fill": "#FFFFFF",
               "width": 320,
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -3062,9 +3062,9 @@
           "type": "frame",
           "id": "efNQU",
           "name": "Status Bar",
-          "fill": "#ECEFF3",
           "width": "fill_container",
           "height": 28,
+          "fill": "#ECEFF3",
           "gap": 10,
           "padding": [
             0,
@@ -3076,8 +3076,8 @@
               "type": "frame",
               "id": "zK8hF",
               "name": "Status Left",
-              "fill": "#00000000",
               "height": "fill_container",
+              "fill": "#00000000",
               "gap": 8,
               "alignItems": "center",
               "children": [
@@ -3085,60 +3085,60 @@
                   "type": "frame",
                   "id": "np3z8",
                   "name": "Module Switcher",
-                  "fill": "#00000000",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "gap": 6,
                   "alignItems": "center",
                   "children": [
                     {
                       "type": "icon_font",
                       "id": "omjYX",
+                      "name": "moduleI",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "inbox",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "moduleI"
+                      "fill": "#6B7280"
                     },
                     {
                       "type": "text",
                       "id": "uHSfm",
+                      "name": "moduleT",
                       "fill": "#374151",
                       "content": "Inbox",
                       "fontFamily": "IBM Plex Mono",
                       "fontSize": 10,
-                      "fontWeight": "800",
-                      "name": "moduleT"
+                      "fontWeight": "800"
                     },
                     {
                       "type": "icon_font",
                       "id": "v7qTt",
+                      "name": "moduleChevron",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "chevron-down",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "moduleChevron"
+                      "fill": "#6B7280"
                     }
                   ]
                 },
                 {
                   "type": "rectangle",
                   "id": "haHgF",
+                  "name": "Sep",
                   "fill": "#C8CDD5",
                   "width": 1,
-                  "height": 14,
-                  "name": "Sep"
+                  "height": 14
                 },
                 {
                   "type": "text",
                   "id": "2XRtX",
+                  "name": "Workspace Selector",
                   "fill": "#374151",
                   "content": "Workspace: demo_workspace",
                   "fontFamily": "IBM Plex Mono",
                   "fontSize": 11,
-                  "fontWeight": "750",
-                  "name": "Workspace Selector"
+                  "fontWeight": "750"
                 }
               ]
             },
@@ -3146,16 +3146,16 @@
               "type": "frame",
               "id": "DHE8w",
               "name": "Status Spacer",
-              "fill": "#00000000",
               "width": "fill_container",
-              "height": "fill_container"
+              "height": "fill_container",
+              "fill": "#00000000"
             },
             {
               "type": "frame",
               "id": "c08Jx",
               "name": "Status Right",
-              "fill": "#00000000",
               "height": "fill_container",
+              "fill": "#00000000",
               "gap": 10,
               "alignItems": "center",
               "children": [
@@ -3171,10 +3171,10 @@
                 {
                   "type": "rectangle",
                   "id": "oHcqZ",
+                  "name": "Sep",
                   "fill": "#C8CDD5",
                   "width": 1,
-                  "height": 14,
-                  "name": "Sep"
+                  "height": 14
                 },
                 {
                   "type": "text",
@@ -3206,27 +3206,27 @@
           "type": "frame",
           "id": "C37Hd",
           "name": "Top",
-          "fill": "#EEF0F2",
           "width": "fill_container",
           "height": 33,
+          "fill": "#EEF0F2",
           "layout": "vertical",
           "children": [
             {
               "type": "frame",
               "id": "XEQoh",
               "name": "Menu Bar",
-              "fill": "#ECEFF3",
               "width": "fill_container",
               "height": 32,
+              "fill": "#ECEFF3",
               "alignItems": "center",
               "children": [
                 {
                   "type": "frame",
                   "id": "8dZmC",
                   "name": "Menu Left",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "gap": 10,
                   "padding": [
                     0,
@@ -3237,22 +3237,22 @@
                     {
                       "type": "icon_font",
                       "id": "0jrT4",
+                      "name": "AppIcon",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "sparkles",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "AppIcon"
+                      "fill": "#6B7280"
                     },
                     {
                       "type": "text",
                       "id": "OxVI2",
+                      "name": "ModuleRoot",
                       "fill": "#111827",
                       "content": ".xnote/ai",
                       "fontFamily": "IBM Plex Mono",
                       "fontSize": 11,
-                      "fontWeight": "800",
-                      "name": "ModuleRoot"
+                      "fontWeight": "800"
                     }
                   ]
                 },
@@ -3260,9 +3260,9 @@
                   "type": "frame",
                   "id": "MwfaA",
                   "name": "Menu Center",
-                  "fill": "#00000000",
                   "width": 520,
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "justifyContent": "center",
                   "alignItems": "center",
                   "children": [
@@ -3270,9 +3270,9 @@
                       "type": "frame",
                       "id": "eJ1Ff",
                       "name": "Command",
-                      "fill": "#F5F6F8",
                       "width": 520,
                       "height": 24,
+                      "fill": "#F5F6F8",
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
@@ -3290,41 +3290,41 @@
                           "type": "frame",
                           "id": "DNRUL",
                           "name": "Cmd Row",
-                          "fill": "#00000000",
                           "width": "fill_container",
                           "height": 20,
+                          "fill": "#00000000",
                           "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "icon_font",
                               "id": "1q5ex",
+                              "name": "cmdI",
                               "width": 14,
                               "height": 14,
                               "iconFontName": "search",
                               "iconFontFamily": "lucide",
-                              "fill": "#6B7280",
-                              "name": "cmdI"
+                              "fill": "#6B7280"
                             },
                             {
                               "type": "text",
                               "id": "HlGhI",
+                              "name": "cmdT",
                               "fill": "#6B7280",
                               "content": "Ask AI / Commands (Ctrl+K)",
                               "fontFamily": "IBM Plex Mono",
                               "fontSize": 11,
-                              "fontWeight": "650",
-                              "name": "cmdT"
+                              "fontWeight": "650"
                             }
                           ]
                         },
                         {
                           "type": "rectangle",
                           "id": "W3ZST",
+                          "name": "Underline",
                           "fill": "#93C5FD",
                           "width": "fill_container",
-                          "height": 2,
-                          "name": "Underline"
+                          "height": 2
                         }
                       ]
                     }
@@ -3334,9 +3334,9 @@
                   "type": "frame",
                   "id": "xSP9P",
                   "name": "Menu Right",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "justifyContent": "end",
                   "alignItems": "center",
                   "children": [
@@ -3344,9 +3344,9 @@
                       "type": "frame",
                       "id": "JEHSL",
                       "name": "Win / Min",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -3365,9 +3365,9 @@
                       "type": "frame",
                       "id": "QiyzQ",
                       "name": "Win / Max",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -3386,9 +3386,9 @@
                       "type": "frame",
                       "id": "OWpqP",
                       "name": "Win / Close",
-                      "fill": "#00000000",
                       "width": 36,
                       "height": "fill_container",
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
@@ -3410,10 +3410,10 @@
             {
               "type": "rectangle",
               "id": "0NYj0",
+              "name": "Divider",
               "fill": "#C8CDD5",
               "width": "fill_container",
-              "height": 1,
-              "name": "Divider"
+              "height": 1
             }
           ]
         },
@@ -3421,26 +3421,26 @@
           "type": "frame",
           "id": "1BhQZ",
           "name": "Main",
-          "fill": "#F5F6F8",
           "width": "fill_container",
           "height": "fill_container",
+          "fill": "#F5F6F8",
           "children": [
             {
               "type": "frame",
               "id": "pgq1a",
               "name": "Sidebar",
-              "fill": "#EEF0F2",
               "width": 48,
               "height": "fill_container",
+              "fill": "#EEF0F2",
               "layout": "vertical",
               "children": [
                 {
                   "type": "frame",
                   "id": "QWYTv",
                   "name": "Rail Top",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "layout": "vertical",
                   "gap": 6,
                   "alignItems": "center",
@@ -3449,38 +3449,38 @@
                       "type": "frame",
                       "id": "ehGj7",
                       "name": "Chat Btn",
-                      "fill": "#E1E5EA",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#E1E5EA",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "rectangle",
                           "id": "PnGH3",
+                          "name": "Active Bar",
                           "fill": "#93C5FD",
                           "width": 3,
-                          "height": "fill_container",
-                          "name": "Active Bar"
+                          "height": "fill_container"
                         },
                         {
                           "type": "frame",
                           "id": "6RSuw",
                           "name": "Icon Shell",
-                          "fill": "#00000000",
                           "width": "fill_container",
                           "height": "fill_container",
+                          "fill": "#00000000",
                           "justifyContent": "center",
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "icon_font",
                               "id": "eRBCj",
+                              "name": "Chat Icon",
                               "width": 18,
                               "height": 18,
                               "iconFontName": "message-square",
                               "iconFontFamily": "lucide",
-                              "fill": "#374151",
-                              "name": "Chat Icon"
+                              "fill": "#374151"
                             }
                           ]
                         }
@@ -3490,21 +3490,21 @@
                       "type": "frame",
                       "id": "iGgX1",
                       "name": "Agents Btn",
-                      "fill": "#00000000",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "icon_font",
                           "id": "WUlRA",
+                          "name": "Agents Icon",
                           "width": 18,
                           "height": 18,
                           "iconFontName": "users",
                           "iconFontFamily": "lucide",
-                          "fill": "#6B7280",
-                          "name": "Agents Icon"
+                          "fill": "#6B7280"
                         }
                       ]
                     },
@@ -3512,21 +3512,21 @@
                       "type": "frame",
                       "id": "IVLR5",
                       "name": "Tools Btn",
-                      "fill": "#00000000",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "icon_font",
                           "id": "6aSNT",
+                          "name": "Tools Icon",
                           "width": 18,
                           "height": 18,
                           "iconFontName": "wrench",
                           "iconFontFamily": "lucide",
-                          "fill": "#6B7280",
-                          "name": "Tools Icon"
+                          "fill": "#6B7280"
                         }
                       ]
                     },
@@ -3534,21 +3534,21 @@
                       "type": "frame",
                       "id": "1pfIF",
                       "name": "History Btn",
-                      "fill": "#00000000",
                       "width": "fill_container",
                       "height": 40,
+                      "fill": "#00000000",
                       "justifyContent": "center",
                       "alignItems": "center",
                       "children": [
                         {
                           "type": "icon_font",
                           "id": "RxG9w",
+                          "name": "History Icon",
                           "width": 18,
                           "height": 18,
                           "iconFontName": "history",
                           "iconFontFamily": "lucide",
-                          "fill": "#6B7280",
-                          "name": "History Icon"
+                          "fill": "#6B7280"
                         }
                       ]
                     }
@@ -3559,18 +3559,18 @@
             {
               "type": "rectangle",
               "id": "tfkgK",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "Qg1aj",
               "name": "Agents",
-              "fill": "#FFFFFF",
               "width": 320,
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -3584,9 +3584,9 @@
                   "type": "frame",
                   "id": "fTepV",
                   "name": "Header",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": 28,
+                  "fill": "#00000000",
                   "alignItems": "center",
                   "children": [
                     {
@@ -3602,17 +3602,17 @@
                       "type": "frame",
                       "id": "6d5pZ",
                       "name": "Spacer",
-                      "fill": "#00000000",
                       "width": "fill_container",
-                      "height": "fill_container"
+                      "height": "fill_container",
+                      "fill": "#00000000"
                     },
                     {
                       "type": "frame",
                       "id": "EPkGM",
                       "name": "New",
-                      "fill": "#F5F6F8",
                       "width": 86,
                       "height": 22,
+                      "fill": "#F5F6F8",
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
@@ -3651,9 +3651,9 @@
                   "type": "frame",
                   "id": "RMjwh",
                   "name": "Agent Card",
-                  "fill": "#F5F6F8",
                   "width": "fill_container",
                   "height": 58,
+                  "fill": "#F5F6F8",
                   "stroke": {
                     "align": "inside",
                     "thickness": 1,
@@ -3687,9 +3687,9 @@
                   "type": "frame",
                   "id": "oEQNh",
                   "name": "Agent Card",
-                  "fill": "#F5F6F8",
                   "width": "fill_container",
                   "height": 58,
+                  "fill": "#F5F6F8",
                   "stroke": {
                     "align": "inside",
                     "thickness": 1,
@@ -3723,9 +3723,9 @@
                   "type": "frame",
                   "id": "UR354",
                   "name": "Agent Card",
-                  "fill": "#F5F6F8",
                   "width": "fill_container",
                   "height": 58,
+                  "fill": "#F5F6F8",
                   "stroke": {
                     "align": "inside",
                     "thickness": 1,
@@ -3760,18 +3760,18 @@
             {
               "type": "rectangle",
               "id": "Acnie",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "Z2jQd",
               "name": "Chat",
-              "fill": "#FFFFFF",
               "width": "fill_container",
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -3785,9 +3785,9 @@
                   "type": "frame",
                   "id": "TZWSv",
                   "name": "Header",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": 28,
+                  "fill": "#00000000",
                   "alignItems": "center",
                   "children": [
                     {
@@ -3803,9 +3803,9 @@
                       "type": "frame",
                       "id": "im0zU",
                       "name": "Spacer",
-                      "fill": "#00000000",
                       "width": "fill_container",
-                      "height": "fill_container"
+                      "height": "fill_container",
+                      "fill": "#00000000"
                     },
                     {
                       "type": "text",
@@ -3822,9 +3822,9 @@
                   "type": "frame",
                   "id": "t57vh",
                   "name": "Messages",
-                  "fill": "#00000000",
                   "width": "fill_container",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "layout": "vertical",
                   "gap": 10,
                   "children": [
@@ -3861,9 +3861,9 @@
                   "type": "frame",
                   "id": "QeoR3",
                   "name": "Prompt",
-                  "fill": "#F5F6F8",
                   "width": "fill_container",
                   "height": 36,
+                  "fill": "#F5F6F8",
                   "stroke": {
                     "align": "inside",
                     "thickness": 1,
@@ -3901,18 +3901,18 @@
             {
               "type": "rectangle",
               "id": "XVQvR",
+              "name": "Sep",
               "fill": "#C8CDD5",
               "width": 1,
-              "height": "fill_container",
-              "name": "Sep"
+              "height": "fill_container"
             },
             {
               "type": "frame",
               "id": "vfg0P",
               "name": "Context & Tools",
-              "fill": "#FFFFFF",
               "width": 360,
               "height": "fill_container",
+              "fill": "#FFFFFF",
               "stroke": {
                 "align": "inside",
                 "thickness": 1,
@@ -3943,10 +3943,10 @@
                 {
                   "type": "rectangle",
                   "id": "PKBBy",
+                  "name": "Divider",
                   "fill": "#C8CDD5",
                   "width": "fill_container",
-                  "height": 1,
-                  "name": "Divider"
+                  "height": 1
                 },
                 {
                   "type": "text",
@@ -3969,10 +3969,10 @@
                 {
                   "type": "rectangle",
                   "id": "i8CE1",
+                  "name": "Divider",
                   "fill": "#C8CDD5",
                   "width": "fill_container",
-                  "height": 1,
-                  "name": "Divider"
+                  "height": 1
                 },
                 {
                   "type": "text",
@@ -4000,9 +4000,9 @@
           "type": "frame",
           "id": "F04xU",
           "name": "Status Bar",
-          "fill": "#ECEFF3",
           "width": "fill_container",
           "height": 28,
+          "fill": "#ECEFF3",
           "gap": 10,
           "padding": [
             0,
@@ -4014,8 +4014,8 @@
               "type": "frame",
               "id": "fA5cf",
               "name": "Status Left",
-              "fill": "#00000000",
               "height": "fill_container",
+              "fill": "#00000000",
               "gap": 8,
               "alignItems": "center",
               "children": [
@@ -4023,60 +4023,60 @@
                   "type": "frame",
                   "id": "W97uK",
                   "name": "Module Switcher",
-                  "fill": "#00000000",
                   "height": "fill_container",
+                  "fill": "#00000000",
                   "gap": 6,
                   "alignItems": "center",
                   "children": [
                     {
                       "type": "icon_font",
                       "id": "kwjYv",
+                      "name": "moduleI",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "sparkles",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "moduleI"
+                      "fill": "#6B7280"
                     },
                     {
                       "type": "text",
                       "id": "pJNLK",
+                      "name": "moduleT",
                       "fill": "#374151",
                       "content": "AI Hub",
                       "fontFamily": "IBM Plex Mono",
                       "fontSize": 10,
-                      "fontWeight": "800",
-                      "name": "moduleT"
+                      "fontWeight": "800"
                     },
                     {
                       "type": "icon_font",
                       "id": "zSeAC",
+                      "name": "moduleChevron",
                       "width": 14,
                       "height": 14,
                       "iconFontName": "chevron-down",
                       "iconFontFamily": "lucide",
-                      "fill": "#6B7280",
-                      "name": "moduleChevron"
+                      "fill": "#6B7280"
                     }
                   ]
                 },
                 {
                   "type": "rectangle",
                   "id": "XdYgs",
+                  "name": "Sep",
                   "fill": "#C8CDD5",
                   "width": 1,
-                  "height": 14,
-                  "name": "Sep"
+                  "height": 14
                 },
                 {
                   "type": "text",
                   "id": "jQbpD",
+                  "name": "Workspace Selector",
                   "fill": "#374151",
                   "content": "Workspace: demo_workspace",
                   "fontFamily": "IBM Plex Mono",
                   "fontSize": 11,
-                  "fontWeight": "750",
-                  "name": "Workspace Selector"
+                  "fontWeight": "750"
                 }
               ]
             },
@@ -4084,16 +4084,16 @@
               "type": "frame",
               "id": "emzYH",
               "name": "Status Spacer",
-              "fill": "#00000000",
               "width": "fill_container",
-              "height": "fill_container"
+              "height": "fill_container",
+              "fill": "#00000000"
             },
             {
               "type": "frame",
               "id": "18Qth",
               "name": "Status Right",
-              "fill": "#00000000",
               "height": "fill_container",
+              "fill": "#00000000",
               "gap": 10,
               "alignItems": "center",
               "children": [
@@ -4109,10 +4109,10 @@
                 {
                   "type": "rectangle",
                   "id": "rY4G4",
+                  "name": "Sep",
                   "fill": "#C8CDD5",
                   "width": 1,
-                  "height": 14,
-                  "name": "Sep"
+                  "height": 14
                 },
                 {
                   "type": "text",
@@ -6006,6 +6006,1754 @@
                           "fontFamily": "IBM Plex Mono",
                           "fontSize": 11,
                           "fontWeight": "750"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "oNz9e",
+      "x": 200,
+      "y": 4060,
+      "name": "AI HUB / Dark (VCP-inspired)",
+      "width": 1440,
+      "height": 900,
+      "fill": "#0b1d2b",
+      "layout": "vertical",
+      "children": [
+        {
+          "type": "frame",
+          "id": "hrHTH",
+          "name": "Top",
+          "width": "fill_container",
+          "height": 33,
+          "fill": "#112738",
+          "layout": "vertical",
+          "children": [
+            {
+              "type": "frame",
+              "id": "sHR3p",
+              "name": "Menu Bar",
+              "width": "fill_container",
+              "height": 32,
+              "fill": "#102536",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "JKqai",
+                  "name": "Menu Left",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "fill": "#00000000",
+                  "gap": 10,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon_font",
+                      "id": "bgkLm",
+                      "name": "AppIcon",
+                      "width": 14,
+                      "height": 14,
+                      "iconFontName": "sparkles",
+                      "iconFontFamily": "lucide",
+                      "fill": "#8fb0cc"
+                    },
+                    {
+                      "type": "text",
+                      "id": "4mpif",
+                      "name": "ModuleRoot",
+                      "fill": "#e6f2ff",
+                      "content": ".xnote/ai",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "800"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "ATseD",
+                  "name": "Menu Center",
+                  "width": 520,
+                  "height": "fill_container",
+                  "fill": "#00000000",
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "7NHam",
+                      "name": "Command",
+                      "width": 520,
+                      "height": 24,
+                      "fill": "#0b1d2b",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#2e4f68"
+                      },
+                      "layout": "vertical",
+                      "gap": 2,
+                      "padding": [
+                        0,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Dx0Nb",
+                          "name": "Cmd Row",
+                          "width": "fill_container",
+                          "height": 20,
+                          "fill": "#00000000",
+                          "gap": 8,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon_font",
+                              "id": "mFLpb",
+                              "name": "cmdI",
+                              "width": 14,
+                              "height": 14,
+                              "iconFontName": "search",
+                              "iconFontFamily": "lucide",
+                              "fill": "#8fb0cc"
+                            },
+                            {
+                              "type": "text",
+                              "id": "rjQRD",
+                              "name": "cmdT",
+                              "fill": "#87a5c0",
+                              "content": "Ask AI / Commands (Ctrl+K)",
+                              "fontFamily": "IBM Plex Mono",
+                              "fontSize": 11,
+                              "fontWeight": "650"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "rectangle",
+                          "id": "cww1v",
+                          "name": "Underline",
+                          "fill": "#5fc4ff",
+                          "width": "fill_container",
+                          "height": 2
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "gA66l",
+                  "name": "Menu Right",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "fill": "#00000000",
+                  "justifyContent": "end",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "J4VQv",
+                      "name": "Win / Min",
+                      "width": 36,
+                      "height": "fill_container",
+                      "fill": "#00000000",
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon_font",
+                          "id": "fDQKf",
+                          "width": 16,
+                          "height": 16,
+                          "iconFontName": "minus",
+                          "iconFontFamily": "lucide",
+                          "fill": "#8fb0cc"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "n8sKv",
+                      "name": "Win / Max",
+                      "width": 36,
+                      "height": "fill_container",
+                      "fill": "#00000000",
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon_font",
+                          "id": "8ZFvk",
+                          "width": 16,
+                          "height": 16,
+                          "iconFontName": "square",
+                          "iconFontFamily": "lucide",
+                          "fill": "#8fb0cc"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "6jlev",
+                      "name": "Win / Close",
+                      "width": 36,
+                      "height": "fill_container",
+                      "fill": "#00000000",
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon_font",
+                          "id": "4OAd1",
+                          "width": 16,
+                          "height": 16,
+                          "iconFontName": "x",
+                          "iconFontFamily": "lucide",
+                          "fill": "#8fb0cc"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "rectangle",
+              "id": "tWPdH",
+              "name": "Divider",
+              "fill": "#2e4f68",
+              "width": "fill_container",
+              "height": 1
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "8DeWG",
+          "name": "Main",
+          "width": "fill_container",
+          "height": "fill_container",
+          "fill": "#0b1d2b",
+          "children": [
+            {
+              "type": "frame",
+              "id": "wMGff",
+              "name": "Sidebar",
+              "width": 48,
+              "height": "fill_container",
+              "fill": "#112738",
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "EQZ8W",
+                  "name": "Rail Top",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "fill": "#00000000",
+                  "layout": "vertical",
+                  "gap": 6,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "mRkYc",
+                      "name": "Chat Btn",
+                      "width": "fill_container",
+                      "height": 40,
+                      "fill": "#1f4868",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "id": "EMeus",
+                          "name": "Active Bar",
+                          "fill": "#5fc4ff",
+                          "width": 3,
+                          "height": "fill_container"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "0f8VH",
+                          "name": "Icon Shell",
+                          "width": "fill_container",
+                          "height": "fill_container",
+                          "fill": "#00000000",
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon_font",
+                              "id": "sIxyB",
+                              "name": "Chat Icon",
+                              "width": 18,
+                              "height": 18,
+                              "iconFontName": "message-square",
+                              "iconFontFamily": "lucide",
+                              "fill": "#b8cee3"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "xNyVp",
+                      "name": "Agents Btn",
+                      "width": "fill_container",
+                      "height": 40,
+                      "fill": "#00000000",
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon_font",
+                          "id": "BWqbf",
+                          "name": "Agents Icon",
+                          "width": 18,
+                          "height": 18,
+                          "iconFontName": "users",
+                          "iconFontFamily": "lucide",
+                          "fill": "#8fb0cc"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "y6SkJ",
+                      "name": "Tools Btn",
+                      "width": "fill_container",
+                      "height": 40,
+                      "fill": "#00000000",
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon_font",
+                          "id": "RZhC6",
+                          "name": "Tools Icon",
+                          "width": 18,
+                          "height": 18,
+                          "iconFontName": "wrench",
+                          "iconFontFamily": "lucide",
+                          "fill": "#8fb0cc"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "7liGf",
+                      "name": "History Btn",
+                      "width": "fill_container",
+                      "height": 40,
+                      "fill": "#00000000",
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon_font",
+                          "id": "jLRpg",
+                          "name": "History Icon",
+                          "width": 18,
+                          "height": 18,
+                          "iconFontName": "history",
+                          "iconFontFamily": "lucide",
+                          "fill": "#8fb0cc"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "rectangle",
+              "id": "ZrSfu",
+              "name": "Sep",
+              "fill": "#2e4f68",
+              "width": 1,
+              "height": "fill_container"
+            },
+            {
+              "type": "frame",
+              "id": "durgi",
+              "name": "Agents",
+              "width": 320,
+              "height": "fill_container",
+              "fill": "#132d42",
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#2e4f68"
+              },
+              "layout": "vertical",
+              "gap": 12,
+              "padding": 12,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "EB0vW",
+                  "name": "Header",
+                  "width": "fill_container",
+                  "height": 28,
+                  "fill": "#00000000",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "j9VQi",
+                      "fill": "#e6f2ff",
+                      "content": "Agents",
+                      "fontFamily": "Inter",
+                      "fontSize": 13,
+                      "fontWeight": "800"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "m776P",
+                      "name": "Spacer",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "#00000000"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "ZRCVJ",
+                      "name": "New",
+                      "width": 86,
+                      "height": 22,
+                      "fill": "#0b1d2b",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#2e4f68"
+                      },
+                      "gap": 6,
+                      "padding": [
+                        0,
+                        8
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon_font",
+                          "id": "2pj3E",
+                          "width": 14,
+                          "height": 14,
+                          "iconFontName": "plus",
+                          "iconFontFamily": "lucide",
+                          "fill": "#8fb0cc"
+                        },
+                        {
+                          "type": "text",
+                          "id": "umJzy",
+                          "fill": "#b8cee3",
+                          "content": "New",
+                          "fontFamily": "IBM Plex Mono",
+                          "fontSize": 10,
+                          "fontWeight": "800"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "VOruk",
+                  "name": "Agent Card",
+                  "width": "fill_container",
+                  "height": 58,
+                  "fill": "#0b1d2b",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#2e4f68"
+                  },
+                  "layout": "vertical",
+                  "gap": 4,
+                  "padding": 10,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "MtCF9",
+                      "fill": "#e6f2ff",
+                      "content": "Coordinator",
+                      "fontFamily": "Inter",
+                      "fontSize": 13,
+                      "fontWeight": "800"
+                    },
+                    {
+                      "type": "text",
+                      "id": "EQDPM",
+                      "fill": "#87a5c0",
+                      "content": "skills: core  ?  tools: allowlist",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "750"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "886tk",
+                  "name": "Agent Card",
+                  "width": "fill_container",
+                  "height": 58,
+                  "fill": "#0b1d2b",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#2e4f68"
+                  },
+                  "layout": "vertical",
+                  "gap": 4,
+                  "padding": 10,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "wPbLI",
+                      "fill": "#e6f2ff",
+                      "content": "Knowledge Editor",
+                      "fontFamily": "Inter",
+                      "fontSize": 13,
+                      "fontWeight": "800"
+                    },
+                    {
+                      "type": "text",
+                      "id": "NTUhC",
+                      "fill": "#87a5c0",
+                      "content": "skills: writing  ?  tools: vault, graph",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "750"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "3XTBf",
+                  "name": "Agent Card",
+                  "width": "fill_container",
+                  "height": 58,
+                  "fill": "#0b1d2b",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#2e4f68"
+                  },
+                  "layout": "vertical",
+                  "gap": 4,
+                  "padding": 10,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "CiwCd",
+                      "fill": "#e6f2ff",
+                      "content": "Resource Curator",
+                      "fontFamily": "Inter",
+                      "fontSize": 13,
+                      "fontWeight": "800"
+                    },
+                    {
+                      "type": "text",
+                      "id": "d9aWC",
+                      "fill": "#87a5c0",
+                      "content": "skills: tagging  ?  tools: resource, derived",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "750"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "rectangle",
+              "id": "MOVu4",
+              "name": "Sep",
+              "fill": "#2e4f68",
+              "width": 1,
+              "height": "fill_container"
+            },
+            {
+              "type": "frame",
+              "id": "ReDOJ",
+              "name": "Chat",
+              "width": "fill_container",
+              "height": "fill_container",
+              "fill": "#132d42",
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#2e4f68"
+              },
+              "layout": "vertical",
+              "gap": 12,
+              "padding": 12,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "uTdvs",
+                  "name": "Header",
+                  "width": "fill_container",
+                  "height": 28,
+                  "fill": "#00000000",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "TK8rC",
+                      "fill": "#e6f2ff",
+                      "content": "Session",
+                      "fontFamily": "Inter",
+                      "fontSize": 13,
+                      "fontWeight": "800"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "r2y7v",
+                      "name": "Spacer",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "#00000000"
+                    },
+                    {
+                      "type": "text",
+                      "id": "1GhNe",
+                      "fill": "#87a5c0",
+                      "content": "Context: Knowledge",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "650"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "ZIZ3V",
+                  "name": "Messages",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "fill": "#00000000",
+                  "layout": "vertical",
+                  "gap": 10,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "R06cj",
+                      "fill": "#b8cee3",
+                      "content": "You: Rewrite selection to be clearer and link to related resources.",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "650"
+                    },
+                    {
+                      "type": "text",
+                      "id": "mUIjT",
+                      "fill": "#e6f2ff",
+                      "content": "AI: Draft ready. I can also create a resource preview image and insert a link.",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "650"
+                    },
+                    {
+                      "type": "text",
+                      "id": "h3M3x",
+                      "fill": "#87a5c0",
+                      "content": "AI: Tools suggested -> graph.searchRelated, resource.importGeneratedImage, vault.applyPatch",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 10,
+                      "fontWeight": "750"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "fM0MD",
+                  "name": "Prompt",
+                  "width": "fill_container",
+                  "height": 36,
+                  "fill": "#0b1d2b",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#2e4f68"
+                  },
+                  "gap": 10,
+                  "padding": [
+                    0,
+                    10
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon_font",
+                      "id": "DFbwn",
+                      "width": 14,
+                      "height": 14,
+                      "iconFontName": "sparkles",
+                      "iconFontFamily": "lucide",
+                      "fill": "#8fb0cc"
+                    },
+                    {
+                      "type": "text",
+                      "id": "iL0sa",
+                      "fill": "#87a5c0",
+                      "content": "Ask AI or type a command?",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "650"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "rectangle",
+              "id": "PzYHX",
+              "name": "Sep",
+              "fill": "#2e4f68",
+              "width": 1,
+              "height": "fill_container"
+            },
+            {
+              "type": "frame",
+              "id": "jqaMO",
+              "name": "Context & Tools",
+              "width": 360,
+              "height": "fill_container",
+              "fill": "#132d42",
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "#2e4f68"
+              },
+              "layout": "vertical",
+              "gap": 12,
+              "padding": 12,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "4nP8g",
+                  "fill": "#e6f2ff",
+                  "content": "Context Pack",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "800"
+                },
+                {
+                  "type": "text",
+                  "id": "raJSM",
+                  "fill": "#b8cee3",
+                  "content": "Active note: C Language.md\nSelection: lines 12-18\nLinked resources: 2\nBacklinks: 5",
+                  "fontFamily": "IBM Plex Mono",
+                  "fontSize": 11,
+                  "fontWeight": "650"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "43b52",
+                  "name": "Divider",
+                  "fill": "#2e4f68",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "text",
+                  "id": "woTqh",
+                  "fill": "#e6f2ff",
+                  "content": "Tools (Allowlist)",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "800"
+                },
+                {
+                  "type": "text",
+                  "id": "9UtuI",
+                  "fill": "#b8cee3",
+                  "content": "- vault.read\n- vault.applyPatch (requires approval)\n- graph.searchRelated\n- resource.import\n- resource.openExternalEditor",
+                  "fontFamily": "IBM Plex Mono",
+                  "fontSize": 11,
+                  "fontWeight": "650"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "xRZeB",
+                  "name": "Divider",
+                  "fill": "#2e4f68",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "text",
+                  "id": "cbuXo",
+                  "fill": "#e6f2ff",
+                  "content": "Run Log",
+                  "fontFamily": "Inter",
+                  "fontSize": 13,
+                  "fontWeight": "800"
+                },
+                {
+                  "type": "text",
+                  "id": "FuR0n",
+                  "fill": "#87a5c0",
+                  "content": "13:31  graph.searchRelated OK\n13:31  vault.applyPatch PENDING APPROVAL",
+                  "fontFamily": "IBM Plex Mono",
+                  "fontSize": 10,
+                  "fontWeight": "750"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "L7CsP",
+          "name": "Status Bar",
+          "width": "fill_container",
+          "height": 28,
+          "fill": "#102536",
+          "gap": 10,
+          "padding": [
+            0,
+            12
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "Wibqn",
+              "name": "Status Left",
+              "height": "fill_container",
+              "fill": "#00000000",
+              "gap": 8,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "N3D90",
+                  "name": "Module Switcher",
+                  "height": "fill_container",
+                  "fill": "#00000000",
+                  "gap": 6,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon_font",
+                      "id": "fT7hr",
+                      "name": "moduleI",
+                      "width": 14,
+                      "height": 14,
+                      "iconFontName": "sparkles",
+                      "iconFontFamily": "lucide",
+                      "fill": "#8fb0cc"
+                    },
+                    {
+                      "type": "text",
+                      "id": "5nyxr",
+                      "name": "moduleT",
+                      "fill": "#b8cee3",
+                      "content": "AI Hub",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 10,
+                      "fontWeight": "800"
+                    },
+                    {
+                      "type": "icon_font",
+                      "id": "fBvn8",
+                      "name": "moduleChevron",
+                      "width": 14,
+                      "height": 14,
+                      "iconFontName": "chevron-down",
+                      "iconFontFamily": "lucide",
+                      "fill": "#8fb0cc"
+                    }
+                  ]
+                },
+                {
+                  "type": "rectangle",
+                  "id": "q2MGl",
+                  "name": "Sep",
+                  "fill": "#2e4f68",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "text",
+                  "id": "MDftu",
+                  "name": "Workspace Selector",
+                  "fill": "#b8cee3",
+                  "content": "Workspace: demo_workspace",
+                  "fontFamily": "IBM Plex Mono",
+                  "fontSize": 11,
+                  "fontWeight": "750"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "tbtdS",
+              "name": "Status Spacer",
+              "width": "fill_container",
+              "height": "fill_container",
+              "fill": "#00000000"
+            },
+            {
+              "type": "frame",
+              "id": "ccJCp",
+              "name": "Status Right",
+              "height": "fill_container",
+              "fill": "#00000000",
+              "gap": 10,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "JGXD2",
+                  "fill": "#87a5c0",
+                  "content": "Agents: 3",
+                  "fontFamily": "IBM Plex Mono",
+                  "fontSize": 10,
+                  "fontWeight": "750"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "mMITu",
+                  "name": "Sep",
+                  "fill": "#2e4f68",
+                  "width": 1,
+                  "height": 14
+                },
+                {
+                  "type": "text",
+                  "id": "RpoM1",
+                  "fill": "#b8cee3",
+                  "content": "Ready",
+                  "fontFamily": "IBM Plex Mono",
+                  "fontSize": 10,
+                  "fontWeight": "800"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "fbpas",
+      "x": 200,
+      "y": 5080,
+      "name": "AI CHAT / VCP Style",
+      "width": 1440,
+      "height": 900,
+      "fill": "#0B2133",
+      "layout": "vertical",
+      "children": [
+        {
+          "type": "frame",
+          "id": "1tOR1",
+          "name": "Top Bar",
+          "width": "fill_container",
+          "height": 56,
+          "fill": "#102A3E",
+          "padding": [
+            0,
+            16
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "eRiCb",
+              "name": "brand",
+              "fill": "#EAF4FF",
+              "content": "VCPChat",
+              "fontFamily": "Inter",
+              "fontSize": 20,
+              "fontWeight": "800"
+            },
+            {
+              "type": "frame",
+              "id": "Fr2CA",
+              "name": "Spacer",
+              "width": "fill_container",
+              "height": "fill_container",
+              "fill": "#00000000"
+            },
+            {
+              "type": "frame",
+              "id": "58yFE",
+              "name": "Tabs",
+              "height": "fill_container",
+              "fill": "#00000000",
+              "gap": 28,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "JfEDD",
+                  "name": "t1",
+                  "fill": "#F8D17B",
+                  "content": "助手",
+                  "fontFamily": "Inter",
+                  "fontSize": 14,
+                  "fontWeight": "800"
+                },
+                {
+                  "type": "text",
+                  "id": "gaBOa",
+                  "name": "t2",
+                  "fill": "#9FB4CA",
+                  "content": "话题",
+                  "fontFamily": "Inter",
+                  "fontSize": 14,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "p8yjR",
+                  "name": "t3",
+                  "fill": "#9FB4CA",
+                  "content": "设置",
+                  "fontFamily": "Inter",
+                  "fontSize": 14,
+                  "fontWeight": "700"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "MnK40",
+              "name": "Spacer",
+              "width": "fill_container",
+              "height": "fill_container",
+              "fill": "#00000000"
+            },
+            {
+              "type": "frame",
+              "id": "olWUh",
+              "name": "Actions",
+              "height": "fill_container",
+              "fill": "#00000000",
+              "gap": 10,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "O0TfM",
+                  "name": "Btn",
+                  "height": 34,
+                  "fill": "#173A55",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#2B5978"
+                  },
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Nm9rK",
+                      "name": "b1t",
+                      "fill": "#D7E9FB",
+                      "content": "新建聊天话题",
+                      "fontFamily": "Inter",
+                      "fontSize": 12,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "wMnVV",
+                  "name": "Btn",
+                  "height": 34,
+                  "fill": "#173A55",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#2B5978"
+                  },
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Qnuti",
+                      "name": "b2t",
+                      "fill": "#D7E9FB",
+                      "content": "清空对话",
+                      "fontFamily": "Inter",
+                      "fontSize": 12,
+                      "fontWeight": "700"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "UaASz",
+          "name": "Main",
+          "width": "fill_container",
+          "height": "fill_container",
+          "fill": "#0B2133",
+          "children": [
+            {
+              "type": "frame",
+              "id": "nuczT",
+              "name": "Agents Panel",
+              "width": 280,
+              "height": "fill_container",
+              "fill": "#163147",
+              "layout": "vertical",
+              "gap": 10,
+              "padding": 14,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "G8bvV",
+                  "name": "lt",
+                  "fill": "#EAF4FF",
+                  "content": "VCP Agents",
+                  "fontFamily": "Inter",
+                  "fontSize": 32,
+                  "fontWeight": "800"
+                },
+                {
+                  "type": "text",
+                  "id": "Fj2ad",
+                  "name": "ls",
+                  "fill": "#7FA0BD",
+                  "content": "活跃 11 · 群组 2",
+                  "fontFamily": "IBM Plex Mono",
+                  "fontSize": 11,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "rectangle",
+                  "id": "ZJgH8",
+                  "name": "Divider",
+                  "fill": "#264B68",
+                  "width": "fill_container",
+                  "height": 1
+                },
+                {
+                  "type": "frame",
+                  "id": "0PsbZ",
+                  "name": "Agent List",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "fill": "#00000000",
+                  "layout": "vertical",
+                  "gap": 8,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "jLz7V",
+                      "name": "Agent Row",
+                      "width": "fill_container",
+                      "height": 58,
+                      "fill": "#A98545",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#C5A76F"
+                      },
+                      "layout": "vertical",
+                      "gap": 2,
+                      "padding": [
+                        8,
+                        10
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "aKGaN",
+                          "name": "r1n",
+                          "fill": "#FFF6E6",
+                          "content": "乌娘小雨",
+                          "fontFamily": "Inter",
+                          "fontSize": 17,
+                          "fontWeight": "800"
+                        },
+                        {
+                          "type": "text",
+                          "id": "MFu0U",
+                          "name": "r1m",
+                          "fill": "#F4E0BB",
+                          "content": "日报模式 · online",
+                          "fontFamily": "IBM Plex Mono",
+                          "fontSize": 11,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "8vS75",
+                      "name": "Agent Row",
+                      "width": "fill_container",
+                      "height": 58,
+                      "fill": "#12314A",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#2A5A7E"
+                      },
+                      "layout": "vertical",
+                      "gap": 2,
+                      "padding": [
+                        8,
+                        10
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "dZ0l0",
+                          "name": "r2n",
+                          "fill": "#DCEEFF",
+                          "content": "秘书小灵",
+                          "fontFamily": "Inter",
+                          "fontSize": 17,
+                          "fontWeight": "800"
+                        },
+                        {
+                          "type": "text",
+                          "id": "JQXGQ",
+                          "name": "r2m",
+                          "fill": "#8DB0CC",
+                          "content": "项目跟踪 · idle",
+                          "fontFamily": "IBM Plex Mono",
+                          "fontSize": 11,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "VJ9KQ",
+                      "name": "Agent Row",
+                      "width": "fill_container",
+                      "height": 58,
+                      "fill": "#12314A",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#2A5A7E"
+                      },
+                      "layout": "vertical",
+                      "gap": 2,
+                      "padding": [
+                        8,
+                        10
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "Cx4V1",
+                          "name": "r3n",
+                          "fill": "#DCEEFF",
+                          "content": "龙娘小娜",
+                          "fontFamily": "Inter",
+                          "fontSize": 17,
+                          "fontWeight": "800"
+                        },
+                        {
+                          "type": "text",
+                          "id": "iTcnP",
+                          "name": "r3m",
+                          "fill": "#8DB0CC",
+                          "content": "创意协作 · online",
+                          "fontFamily": "IBM Plex Mono",
+                          "fontSize": 11,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "6p7sW",
+                      "name": "Agent Row",
+                      "width": "fill_container",
+                      "height": 58,
+                      "fill": "#12314A",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#2A5A7E"
+                      },
+                      "layout": "vertical",
+                      "gap": 2,
+                      "padding": [
+                        8,
+                        10
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "403BF",
+                          "name": "r4n",
+                          "fill": "#DCEEFF",
+                          "content": "猫娘小克",
+                          "fontFamily": "Inter",
+                          "fontSize": 17,
+                          "fontWeight": "800"
+                        },
+                        {
+                          "type": "text",
+                          "id": "BELYh",
+                          "name": "r4m",
+                          "fill": "#8DB0CC",
+                          "content": "代码助理 · idle",
+                          "fontFamily": "IBM Plex Mono",
+                          "fontSize": 11,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "A1O4P",
+                  "name": "Bottom Actions",
+                  "width": "fill_container",
+                  "height": 44,
+                  "fill": "#00000000",
+                  "gap": 10,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "SWejv",
+                      "name": "ba",
+                      "width": "fill_container",
+                      "height": 40,
+                      "fill": "#2B4E6B",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#4F7595"
+                      },
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "218Sy",
+                          "name": "bat",
+                          "fill": "#E5F1FF",
+                          "content": "创建 Agent",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "800"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KaqZy",
+                      "name": "bg",
+                      "width": "fill_container",
+                      "height": 40,
+                      "fill": "#2B4E6B",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#4F7595"
+                      },
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "JsCye",
+                          "name": "bgt",
+                          "fill": "#E5F1FF",
+                          "content": "创建 Group",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "800"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "rectangle",
+              "id": "BZBth",
+              "name": "Sep",
+              "fill": "#24445E",
+              "width": 1,
+              "height": "fill_container"
+            },
+            {
+              "type": "frame",
+              "id": "1cCUK",
+              "name": "Chat Panel",
+              "width": "fill_container",
+              "height": "fill_container",
+              "fill": "#10273B",
+              "layout": "vertical",
+              "gap": 10,
+              "padding": 12,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "LAji9",
+                  "name": "Chat Header",
+                  "width": "fill_container",
+                  "height": 44,
+                  "fill": "#173550",
+                  "padding": [
+                    0,
+                    14
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "gTnoe",
+                      "name": "ht",
+                      "fill": "#F4D89A",
+                      "content": "与 乌娘小雨 聊天中",
+                      "fontFamily": "Inter",
+                      "fontSize": 20,
+                      "fontWeight": "800"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "M4gik",
+                  "name": "Hero Banner",
+                  "width": "fill_container",
+                  "height": 120,
+                  "fill": "#1A3F5C",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#2D5A7A"
+                  },
+                  "layout": "vertical",
+                  "gap": 6,
+                  "padding": 12,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "5PdsU",
+                      "name": "herot",
+                      "fill": "#EAD3A2",
+                      "content": "小雨小雨~ 来份今天的报纸，哈哈~",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "700"
+                    },
+                    {
+                      "type": "text",
+                      "id": "1BCvf",
+                      "name": "heros",
+                      "fill": "#AFC8DF",
+                      "content": "AI Agent 将使用可用工具查询并生成结构化摘要",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 11,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "uAxAv",
+                  "name": "Messages",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "fill": "#0F2D45",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#244F6F"
+                  },
+                  "layout": "vertical",
+                  "gap": 10,
+                  "padding": 16,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "jGDgu",
+                      "name": "Assistant Bubble",
+                      "width": "fill_container",
+                      "fill": "#1B405E",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#2E5E80"
+                      },
+                      "layout": "vertical",
+                      "gap": 6,
+                      "padding": 12,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "EFDWr",
+                          "name": "m1a",
+                          "fill": "#D7E9FB",
+                          "content": "乌娘小雨  04:04",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "800"
+                        },
+                        {
+                          "type": "text",
+                          "id": "ZGxSK",
+                          "name": "m1b",
+                          "fill": "#E8F2FF",
+                          "content": "莱恩先生，您的《灵鸟日报》已经新鲜出炉了！小雨怀着雀跃的心情，为您精心编撰了今日头条与各方要闻。",
+                          "fontFamily": "Inter",
+                          "fontSize": 14,
+                          "fontWeight": "650"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "HqSEZ",
+                      "name": "Daily Card",
+                      "width": "fill_container",
+                      "fill": "#E8EEF4",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#C8D6E3"
+                      },
+                      "layout": "vertical",
+                      "gap": 10,
+                      "padding": 16,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "H8Rc2",
+                          "name": "pt",
+                          "fill": "#4C7AA8",
+                          "content": "《灵鸟日报》",
+                          "fontFamily": "Inter",
+                          "fontSize": 38,
+                          "fontWeight": "800"
+                        },
+                        {
+                          "type": "text",
+                          "id": "Edy4C",
+                          "name": "pd",
+                          "fill": "#6F90AD",
+                          "content": "2026年2月11日，星期三",
+                          "fontFamily": "Inter",
+                          "fontSize": 16,
+                          "fontWeight": "700"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "P4235",
+                          "name": "Section",
+                          "width": "fill_container",
+                          "fill": "#F7FAFC",
+                          "stroke": {
+                            "align": "inside",
+                            "thickness": 1,
+                            "fill": "#D9E2EA"
+                          },
+                          "layout": "vertical",
+                          "gap": 8,
+                          "padding": 12,
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "W2eW4",
+                              "name": "sect",
+                              "fill": "#2E9965",
+                              "content": "【科技前沿 · 智慧之光】",
+                              "fontFamily": "Inter",
+                              "fontSize": 28,
+                              "fontWeight": "800"
+                            },
+                            {
+                              "type": "text",
+                              "id": "ovN4A",
+                              "name": "i1",
+                              "fill": "#37526A",
+                              "content": "AI设计新型蛋白质抵细菌耐药性，生物科技迎来关键突破。",
+                              "fontFamily": "Inter",
+                              "fontSize": 18,
+                              "fontWeight": "700"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Hw7nd",
+                              "name": "i2",
+                              "fill": "#37526A",
+                              "content": "分辨可乐与咖啡的新型感知模型公开，饮品识别精度再提升。",
+                              "fontFamily": "Inter",
+                              "fontSize": 18,
+                              "fontWeight": "700"
+                            },
+                            {
+                              "type": "text",
+                              "id": "wOh5D",
+                              "name": "i3",
+                              "fill": "#37526A",
+                              "content": "开发者效率争议持续发酵，实测结果引发行业热议。",
+                              "fontFamily": "Inter",
+                              "fontSize": 18,
+                              "fontWeight": "700"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "rvSv1",
+                      "name": "User Bubble",
+                      "width": "fill_container",
+                      "fill": "#14334B",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#2A5879"
+                      },
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": 10,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "loNKl",
+                          "name": "mb2t",
+                          "fill": "#D3E6F8",
+                          "content": "你：再加一段对 XNote 本周进展的总结。",
+                          "fontFamily": "Inter",
+                          "fontSize": 13,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "AhM1w",
+                      "name": "Tool Trace Hint",
+                      "width": "fill_container",
+                      "fill": "#102A40",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#2A5879"
+                      },
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": 10,
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "5NKFB",
+                          "name": "mb3t",
+                          "fill": "#8DB0CC",
+                          "content": "AI：已调用工具 -> knowledge.search / vault.read_note（2次）",
+                          "fontFamily": "IBM Plex Mono",
+                          "fontSize": 11,
+                          "fontWeight": "750"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "wg3FJ",
+                  "name": "Input Bar",
+                  "width": "fill_container",
+                  "height": 62,
+                  "fill": "#132D42",
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "#2D5A7A"
+                  },
+                  "gap": 10,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "euHfH",
+                      "name": "inpt",
+                      "fill": "#7FA0BD",
+                      "content": "输入消息...（Shift+Enter 换行）",
+                      "fontFamily": "IBM Plex Mono",
+                      "fontSize": 12,
+                      "fontWeight": "700"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Tsypn",
+                      "name": "Spacer",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "#00000000"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "5sZON",
+                      "name": "Send",
+                      "width": 44,
+                      "height": 44,
+                      "fill": "#2F6F98",
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "#5A9BC4"
+                      },
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "1kf0j",
+                          "name": "sendt",
+                          "fill": "#EAF4FF",
+                          "content": "➤",
+                          "fontFamily": "Inter",
+                          "fontSize": 18,
+                          "fontWeight": "900"
                         }
                       ]
                     }

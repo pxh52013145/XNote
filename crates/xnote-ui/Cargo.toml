@@ -9,3 +9,5 @@ gpui = "0.2.2"
 serde_json = "1.0"
 xnote-core = { path = "../xnote-core" }
 anyhow = "1.0.100"
+ureq = { version = "2.12", features = ["json"] }
+chrono = { version = "0.4", features = ["clock"] }
